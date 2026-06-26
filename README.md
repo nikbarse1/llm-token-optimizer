@@ -79,7 +79,7 @@ A Spring Boot application that helps developers optimize text for Large Language
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/demo-for-llm.git
+git clone https://github.com/nikbarse1/demo-for-llm.git
 cd demo-for-llm
 ```
 
