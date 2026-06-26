@@ -15,7 +15,7 @@ Thank you for your interest in contributing! This document provides guidelines f
 1. **Fork the repository** on GitHub
 2. **Clone your fork** locally:
    ```bash
-   git clone https://github.com/your-username/demo-for-llm.git
+   git clone https://github.com/nikbarse1/demo-for-llm.git
    cd demo-for-llm
    ```
 3. **Create a branch** for your changes:
