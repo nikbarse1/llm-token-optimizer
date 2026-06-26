@@ -1,0 +1,12 @@
+target/
+.mvn/
+.git/
+.gitignore
+.idea/
+*.iml
+*.log
+.env
+.env.local
+application-local.properties
+README.md
+.vscode/

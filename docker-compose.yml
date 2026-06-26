@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  llm-token-optimizer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: llm-token-optimizer
+    ports:
+      - "8080:8080"
+    environment:
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_MODEL=${LLM_MODEL:-llama-3.1-8b-instant}
+      - SPRING_PROFILES_ACTIVE=prod
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
