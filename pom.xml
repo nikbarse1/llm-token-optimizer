@@ -13,7 +13,7 @@
 	<version>0.0.1-SNAPSHOT</version>
 	<name>LLM Token Optimizer</name>
 	<description>A Spring Boot application for counting tokens and optimizing documents for LLM context windows</description>
-	<url>https://github.com/yourusername/demo-for-llm</url>
+	<url>https://github.com/nikbarse1/demo-for-llm</url>
 	<licenses>
 		<license>
 			<name>MIT License</name>
