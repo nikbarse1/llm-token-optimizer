@@ -16,4 +16,11 @@ public class OptimizationRequest {
     @Min(value = 100, message = "Context window must be at least 100 tokens")
     @Schema(description = "Target context window size in tokens", example = "16000", defaultValue = "16000")
     private int contextWindow = 16000;
+
+    private TargetType targetType; // <-- New field
+
+    public enum TargetType {
+        INSTRUCTION,
+        DOCUMENT
+    }
 }

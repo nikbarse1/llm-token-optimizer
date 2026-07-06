@@ -16,62 +16,32 @@ public class TokenOptimizationService {
         this.llmSummarizationService = llmSummarizationService;
     }
 
-    // Aggressive optimization: always compress documents to achieve 70-90% reduction
-    private static final double TARGET_REDUCTION_RATIO = 0.8; // Target 80% reduction
-    private static final int MIN_TARGET_TOKENS = 50; // Minimum tokens to preserve content
-    private static final int MAX_TARGET_TOKENS = 200; // Maximum tokens for optimal LLM context
-
     public Mono<OptimizationResponse> optimizeDocument(OptimizationRequest request) {
         String rawText = request.getDocument();
-        int contextWindow = request.getContextWindow();
         int originalTokens = tokenCounterService.countTokens(rawText);
-        int targetTokens = computeTargetTokens(originalTokens);
 
-        log.info("Optimization: {} original tokens -> target {} tokens ({}% reduction goal)", 
-                originalTokens, targetTokens, (int)((1 - (double)targetTokens/originalTokens) * 100));
+        log.info("Starting smart optimization for {} (Original Tokens: {})", request.getTargetType(), originalTokens);
 
-        // ALWAYS perform optimization - no more skipping for small documents
-
-        return llmSummarizationService.compress(rawText, targetTokens)
+        // Delegate completely to the LLM for smart compression
+        return llmSummarizationService.smartCompress(rawText, request.getTargetType())
                 .map(summary -> {
                     int summaryTokens = tokenCounterService.countTokens(summary);
-                    return buildResponse(contextWindow, originalTokens, summaryTokens, summary);
+                    log.info("Completed smart optimization for {}. New Tokens: {}", request.getTargetType(), summaryTokens);
+                    return buildResponse(originalTokens, summaryTokens, summary);
                 });
     }
 
-    /**
-     * Computes target tokens for aggressive 70-90% reduction regardless of document size
-     */
-    private int computeTargetTokens(int originalTokens) {
-        // Calculate target based on desired reduction ratio
-        int target = (int) (originalTokens * (1 - TARGET_REDUCTION_RATIO));
-        
-        // Ensure we stay within reasonable bounds
-        target = Math.max(MIN_TARGET_TOKENS, target);
-        target = Math.min(MAX_TARGET_TOKENS, target);
-        
-        log.debug("Computed target tokens: {} (from {} original, {}% reduction)", 
-                target, originalTokens, (int)(TARGET_REDUCTION_RATIO * 100));
-        
-        return target;
-    }
-
-    private OptimizationResponse buildResponse(int contextWindow, int originalTokens, int summaryTokens, String content) {
+    private OptimizationResponse buildResponse(int originalTokens, int summaryTokens, String content) {
         double reduction = 0.0;
         if (originalTokens > 0) {
             reduction = ((double) (originalTokens - summaryTokens) / originalTokens) * 100;
         }
 
-        int headroomBefore = Math.max(0, contextWindow - originalTokens);
-        int headroomAfter = Math.max(0, contextWindow - summaryTokens);
-
+        // Map directly to the new internal Groq fields in the updated DTO
         return OptimizationResponse.builder()
-                .contextWindow(contextWindow)
-                .originalTokens(originalTokens)
-                .summaryTokens(summaryTokens)
-                .reductionPercentage(Double.parseDouble(String.format("%.2f", reduction)))
-                .headroomBefore(headroomBefore)
-                .headroomAfter(headroomAfter)
+                .groqInputTokens(originalTokens)
+                .groqOutputTokens(summaryTokens)
+                .groqReductionPercentage(Double.parseDouble(String.format("%.2f", reduction)))
                 .summary(content)
                 .build();
     }

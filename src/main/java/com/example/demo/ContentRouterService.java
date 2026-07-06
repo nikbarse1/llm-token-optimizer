@@ -1,6 +1,6 @@
 package com.example.demo;
 
-import com.example.dto.UnifiedAnalysisResponse;
+import com.example.demo.dto.UnifiedAnalysisResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
