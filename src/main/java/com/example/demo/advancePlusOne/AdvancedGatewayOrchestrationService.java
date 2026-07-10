@@ -30,6 +30,10 @@ public class AdvancedGatewayOrchestrationService {
     private static final int INSTRUCTION_THRESHOLD_TOKENS = 100;
     private static final int HISTORY_COMPRESSION_THRESHOLD = 200;
 
+    private static final int ROUTER_SIMPLE_INSTRUCTION_LIMIT = 50;
+    private static final int ROUTER_SIMPLE_PROMPT_LIMIT = 400;
+    private static final String FALLBACK_CHEAP_PROVIDER = "FAST_TIER";
+
     public Mono<AiChatResponse> processStatefulChat(
             String instruction,
             MultipartFile file,
@@ -71,11 +75,12 @@ public class AdvancedGatewayOrchestrationService {
                 OptimizationResponse optimizedInst = optTuple.getT1();
                 OptimizationResponse optimizedHist = optTuple.getT2();
 
-                sessionState.setCompressedDistantHistory(optimizedHist.getSummary());
+                // Save the new compressed history back to the session state
+                sessionState.setCompressedDistantHistory(optimizedHist.getTempSummary());
 
                 String compiledPrompt = stitchGatewayPayload(
-                        optimizedInst.getSummary(),
-                        optimizedHist.getSummary(),
+                        optimizedInst.getTempSummary(),
+                        optimizedHist.getTempSummary(),
                         rawShortTermHistory
                 );
 
@@ -83,16 +88,28 @@ public class AdvancedGatewayOrchestrationService {
 
                 String naivePayload = stitchNaivePayload(instruction, historicalChain);
                 int hypotheticalRawTokens = tokenCounterService.countTokens(naivePayload);
+
                 int turnTokensSaved = Math.max(0, hypotheticalRawTokens - finalPromptTokens);
 
-                LlmProvider targetLlm = providerRegistry.getProvider(providerName);
+                String smartProviderName = determineOptimalProvider(
+                        providerName,
+                        instructionTokens,
+                        finalPromptTokens,
+                        contextResult
+                );
+
+                LlmProvider targetLlm = providerRegistry.getProvider(smartProviderName);
 
                 return targetLlm.askAi(compiledPrompt).flatMap(aiAnswer -> {
 
+                    String contentToSave = (contextResult.text() != null && !contextResult.text().isBlank())
+                            ? optimizedInst.getTempSummary()
+                            : instruction;
+
                     GatewayMessage userTurn = GatewayMessage.builder()
                             .role(GatewayMessage.Role.USER)
-                            .content(instruction)
-                            .tokenCount(instructionTokens)
+                            .content(contentToSave)
+                            .tokenCount(tokenCounterService.countTokens(contentToSave))
                             .timestamp(Instant.now())
                             .build();
 
@@ -111,22 +128,33 @@ public class AdvancedGatewayOrchestrationService {
                         OptimizationResponse mergedMetrics = mergeMetrics(
                                 optimizedInst, optimizedHist, contextWindow,
                                 compiledPrompt, finalPromptTokens,
-                                hypotheticalRawTokens, turnTokensSaved
+                                hypotheticalRawTokens, turnTokensSaved,
+                                smartProviderName,
+                                providerName
                         );
-
-                        boolean wasOptimized = true;
 
                         return AiChatResponse.builder()
                                 .userReadableMessage(aiAnswer)
                                 .sourceType(contextResult.sourceType())
-                                .wasOptimized(wasOptimized)
-                                .optimizationMetrics((isDevMode && wasOptimized) ? mergedMetrics : null)
+                                .wasOptimized(true)
+                                .optimizationMetrics((isDevMode) ? mergedMetrics : null)
                                 .chatId(chatId)
                                 .build();
                     });
                 });
             });
         });
+    }
+
+    private String determineOptimalProvider(String requestedProvider, int instructionTokens, int finalPromptTokens, ContextResult contextResult) {
+        boolean hasHeavyContext = contextResult.text() != null && !contextResult.text().isBlank();
+
+        if (!hasHeavyContext && instructionTokens < 25 && finalPromptTokens < ROUTER_SIMPLE_PROMPT_LIMIT) {
+            log.info("Cascading Router Triggered: Trivial request detected. Downgrading to {}.", FALLBACK_CHEAP_PROVIDER);
+            return FALLBACK_CHEAP_PROVIDER;
+        }
+
+        return requestedProvider;
     }
 
     private Mono<OptimizationResponse> processOptimization(String text, int tokens, int threshold, int contextWindow, TargetType type) {
@@ -144,12 +172,15 @@ public class AdvancedGatewayOrchestrationService {
     }
 
     private Mono<OptimizationResponse> processHistoryCompounding(String newDistantText, String existingSummary, int contextWindow) {
-        if (newDistantText.isBlank()) {
-            return Mono.just(createBypassMetrics(existingSummary, tokenCounterService.countTokens(existingSummary)));
+        // Defensive check: Added null safety for existingSummary
+        String safeExisting = (existingSummary == null) ? "" : existingSummary;
+
+        if (newDistantText == null || newDistantText.isBlank()) {
+            return Mono.just(createBypassMetrics(safeExisting, tokenCounterService.countTokens(safeExisting)));
         }
 
-        String compoundingHistoryPayload = existingSummary.isBlank() ? newDistantText
-                : String.format("PREVIOUS RECAP:\n%s\n\nNEW CONVERSATION TRANSCRIPT:\n%s", existingSummary, newDistantText);
+        String compoundingHistoryPayload = safeExisting.isBlank() ? newDistantText
+                : String.format("PREVIOUS RECAP:\n%s\n\nNEW CONVERSATION TRANSCRIPT:\n%s", safeExisting, newDistantText);
 
         int totalHistoryTokens = tokenCounterService.countTokens(compoundingHistoryPayload);
 
@@ -182,52 +213,56 @@ public class AdvancedGatewayOrchestrationService {
         return payload.toString();
     }
 
-    private OptimizationResponse mergeMetrics(OptimizationResponse inst, OptimizationResponse doc, int contextWindow, String finalPromptContent,
-                                              int finalPromptTokens, int hypotheticalRawTokens,
-                                              int turnTokensSaved) {
+    private OptimizationResponse mergeMetrics(
+            OptimizationResponse inst, OptimizationResponse doc, int contextWindow,
+            String finalPromptContent, int finalPromptTokens, int hypotheticalRawTokens,
+            int turnTokensSaved, String actualProvider, String requestedProvider) {
 
-        // 1. Internal Groq Math (Strictly using the new clearer fields)
-        int groqInput = (inst.getGroqInputTokens() != null ? inst.getGroqInputTokens() : 0)
-                + (doc.getGroqInputTokens() != null ? doc.getGroqInputTokens() : 0);
+        int fastTierInput = (inst.getTempFastTierInputTokens() != null ? inst.getTempFastTierInputTokens() : 0)
+                + (doc.getTempFastTierInputTokens() != null ? doc.getTempFastTierInputTokens() : 0);
 
-        int groqOutput = (inst.getGroqOutputTokens() != null ? inst.getGroqOutputTokens() : 0)
-                + (doc.getGroqOutputTokens() != null ? doc.getGroqOutputTokens() : 0);
+        int fastTierOutput = (inst.getTempFastTierOutputTokens() != null ? inst.getTempFastTierOutputTokens() : 0)
+                + (doc.getTempFastTierOutputTokens() != null ? doc.getTempFastTierOutputTokens() : 0);
 
-        double groqReduction = groqInput > 0 ? ((double) (groqInput - groqOutput) / groqInput) * 100 : 0.0;
+        double fastTierReduction = fastTierInput > 0 ? ((double) (fastTierInput - fastTierOutput) / fastTierInput) * 100 : 0.0;
+        double totalSavingsPercent = hypotheticalRawTokens > 0 ? ((double) turnTokensSaved / hypotheticalRawTokens) * 100 : 0.0;
 
-        // 2. Total Savings Math (The proof of value)
-        double totalSavingsPercent = hypotheticalRawTokens > 0
-                ? ((double) turnTokensSaved / hypotheticalRawTokens) * 100
-                : 0.0;
+        String actionTaken = requestedProvider.equalsIgnoreCase(actualProvider)
+                ? "EXECUTED_AS_REQUESTED"
+                : "DOWNGRADED_TO_CHEAPER_MODEL";
 
         return OptimizationResponse.builder()
-                // The Savings Dashboard
-                .hypotheticalRawTokens(hypotheticalRawTokens)
-                .finalPromptTokens(finalPromptTokens)
-                .turnTokensSaved(turnTokensSaved)
-                .totalSavingsPercentage(Double.parseDouble(String.format("%.2f", totalSavingsPercent)))
-
-                // The Internal Groq Metrics
-                .groqInputTokens(groqInput)
-                .groqOutputTokens(groqOutput)
-                .groqReductionPercentage(Double.parseDouble(String.format("%.2f", groqReduction)))
-                .summary(buildFinalPromptSummary(inst.getSummary(), doc.getSummary()))
-
-                // Context / Payload Tracking
-                .contextWindow(contextWindow)
-                .headroomBefore(Math.max(0, contextWindow - hypotheticalRawTokens))
-                .headroomAfter(Math.max(0, contextWindow - finalPromptTokens))
-                .finalPromptContent(finalPromptContent)
+                .routingDecision(OptimizationResponse.RoutingDecision.builder()
+                        .requestedProvider(requestedProvider)
+                        .executedProvider(actualProvider)
+                        .actionTaken(actionTaken)
+                        .build())
+                .billingImpact(OptimizationResponse.BillingImpact.builder()
+                        .baselineTokens(hypotheticalRawTokens)
+                        .billedTokens(finalPromptTokens)
+                        .tokensSaved(turnTokensSaved)
+                        .savingsPercentage(Double.parseDouble(String.format("%.2f", totalSavingsPercent)))
+                        .build())
+                .compressionInternals(OptimizationResponse.CompressionInternals.builder()
+                        .tokensProcessed(fastTierInput)
+                        .tokensOutput(fastTierOutput)
+                        .compressionReduction(Double.parseDouble(String.format("%.2f", fastTierReduction)))
+                        .compressionSummary(buildFinalPromptSummary(inst.getTempSummary(), doc.getTempSummary()))
+                        .build())
+                .payloadSnapshot(OptimizationResponse.PayloadSnapshot.builder()
+                        .contextWindowSize(contextWindow)
+                        .remainingHeadroom(Math.max(0, contextWindow - finalPromptTokens))
+                        .finalPrompt(finalPromptContent)
+                        .build())
                 .build();
     }
 
     private OptimizationResponse createBypassMetrics(String text, int tokens) {
-        return OptimizationResponse.builder()
-                .groqInputTokens(tokens)         // CORRECTED
-                .groqOutputTokens(tokens)        // CORRECTED
-                .groqReductionPercentage(0.0)    // CORRECTED
-                .summary(text)
-                .build();
+        OptimizationResponse response = new OptimizationResponse();
+        response.setTempFastTierInputTokens(tokens);
+        response.setTempFastTierOutputTokens(tokens);
+        response.setTempSummary(text);
+        return response;
     }
 
     private Mono<ContextResult> resolveDocumentContext(MultipartFile file, String url) {
@@ -252,7 +287,9 @@ public class AdvancedGatewayOrchestrationService {
     }
 
     private String buildFinalPromptSummary(String optimizedInstruction, String optimizedHistory) {
-        return String.format("Instruction Snapshot:\n%s\n\nHistory Snapshot:\n%s", optimizedInstruction, optimizedHistory);
+        String safeInst = optimizedInstruction == null ? "" : optimizedInstruction;
+        String safeHist = optimizedHistory == null ? "" : optimizedHistory;
+        return String.format("Instruction Snapshot:\n%s\n\nHistory Snapshot:\n%s", safeInst, safeHist);
     }
 
     private String stitchNaivePayload(String instruction, List<GatewayMessage> allHistory) {

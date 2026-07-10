@@ -32,17 +32,13 @@ public class TokenOptimizationService {
     }
 
     private OptimizationResponse buildResponse(int originalTokens, int summaryTokens, String content) {
-        double reduction = 0.0;
-        if (originalTokens > 0) {
-            reduction = ((double) (originalTokens - summaryTokens) / originalTokens) * 100;
-        }
-
-        // Map directly to the new internal Groq fields in the updated DTO
+        // Map directly to the new temporary tracking fields.
+        // The AdvancedGatewayOrchestrationService will extract these, do the final math,
+        // and populate the clean nested JSON structure.
         return OptimizationResponse.builder()
-                .groqInputTokens(originalTokens)
-                .groqOutputTokens(summaryTokens)
-                .groqReductionPercentage(Double.parseDouble(String.format("%.2f", reduction)))
-                .summary(content)
+                .tempFastTierInputTokens(originalTokens)
+                .tempFastTierOutputTokens(summaryTokens)
+                .tempSummary(content)
                 .build();
     }
 }

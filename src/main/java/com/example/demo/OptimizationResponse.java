@@ -1,7 +1,6 @@
 package com.example.demo;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
-import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -19,42 +18,62 @@ public class OptimizationResponse {
     @Builder.Default
     private LocalDateTime timestamp = LocalDateTime.now();
 
-    // --- 1. THE SAVINGS DASHBOARD (What you want to see for demos) ---
+    private RoutingDecision routingDecision;
+    private BillingImpact billingImpact;
+    private CompressionInternals compressionInternals;
+    private PayloadSnapshot payloadSnapshot;
 
-    @Schema(description = "If we didn't use the Gateway, Gemini would have charged you for this many tokens.")
-    private Integer hypotheticalRawTokens;
+    // --- NESTED DTO CLASSES ---
 
-    @Schema(description = "Because we used the Gateway, Gemini only charged you for this many tokens.")
-    private Integer finalPromptTokens;
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class RoutingDecision {
+        private String requestedProvider;
+        private String executedProvider;
+        private String actionTaken;
+    }
 
-    @Schema(description = "The exact number of tokens the Gateway prevented Gemini from billing you for.")
-    private Integer turnTokensSaved;
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class BillingImpact {
+        private Integer baselineTokens; // What would have been charged
+        private Integer billedTokens;   // What was actually charged
+        private Integer tokensSaved;
+        private Double savingsPercentage;
+    }
 
-    @Schema(description = "Overall percentage of tokens saved on this request.")
-    private Double totalSavingsPercentage;
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class CompressionInternals {
+        private Integer tokensProcessed; // Fast-tier input
+        private Integer tokensOutput;    // Fast-tier output
+        private Double compressionReduction;
+        private String compressionSummary;
+    }
 
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class PayloadSnapshot {
+        private Integer contextWindowSize;
+        private Integer remainingHeadroom;
+        private String finalPrompt;
+    }
 
-    // --- 2. INTERNAL METRICS (Groq's job, kept for debugging) ---
-
-    @Schema(description = "The text Groq actually compressed.")
-    private String summary;
-
-    @Schema(description = "Tokens sent to Groq for compression.")
-    private Integer groqInputTokens;
-
-    @Schema(description = "Tokens returned by Groq after compression.")
-    private Integer groqOutputTokens;
-
-    @Schema(description = "How much Groq reduced its specific chunk.")
-    private Double groqReductionPercentage;
-
-
-    // --- 3. CONTEXT TRACKING (Optional, kept from original) ---
-    private Integer contextWindow;
-    private Integer headroomBefore;
-    private Integer headroomAfter;
-
-    // --- 4. THE PAYLOAD (What was actually sent) ---
-    @Schema(description = "The exact verbatim text payload sent to Gemini")
-    private String finalPromptContent;
+    // --- TEMPORARY FIELDS USED DURING INTERNAL PIPELINE PROCESSING ---
+    // (These are hidden from the final JSON output via @JsonIgnore if desired,
+    // but kept here so your intermediate map-reduce logic doesn't break)
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private Integer tempFastTierInputTokens;
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private Integer tempFastTierOutputTokens;
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private String tempSummary;
 }

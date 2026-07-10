@@ -12,29 +12,32 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
 @Service
 @Slf4j
 public class LLMSummarizationService {
 
-    private static final int CHUNK_CHAR_SIZE = 20_000;
-    private static final int CHUNK_CONCURRENCY = 3;
-    private static final int GENEROUS_MAX_TOKENS = 4000; // Let the LLM decide, just set a safe upper ceiling
+    private static final int CHUNK_CHAR_SIZE = 12_000;
+    private static final int CHUNK_CONCURRENCY = 1;
+    private static final int SUMMARY_MAX_TOKENS = 1024;
 
     private final WebClient webClient;
-    private final String model;
+    private final String activeModel;
 
     public LLMSummarizationService(
-            @Value("${llm.api.key:}") String apiKey,
-            @Value("${llm.model:llama-3.3-70b-versatile}") String model
+            @Value("${llm.fast_tier.base_url}") String baseUrl,
+            @Value("${llm.fast_tier.api.key:}") String apiKey,
+            @Value("${llm.fast_tier.model}") String activeModel
     ) {
-        this.model = model;
+        this.activeModel = activeModel;
+
         this.webClient = WebClient.builder()
-                .baseUrl("https://api.groq.com/openai/v1/chat/completions")
+                .baseUrl(baseUrl)
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
                 .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
                 .build();
+
+        log.info("Fast-Tier Engine configured using base URL: {}", baseUrl);
     }
 
     public Mono<String> smartCompress(String text, OptimizationRequest.TargetType targetType) {
@@ -45,24 +48,21 @@ public class LLMSummarizationService {
         List<String> chunks = splitIntoChunks(text, CHUNK_CHAR_SIZE);
 
         if (chunks.size() == 1) {
-            return callGroq(buildSmartPrompt(chunks.get(0), targetType), GENEROUS_MAX_TOKENS, chunks.get(0));
+            return callFastTier(buildSmartPrompt(chunks.get(0), targetType), SUMMARY_MAX_TOKENS, chunks.get(0));
         }
 
-        log.info("Input is large ({} chars) - splitting into {} chunks for smart map-reduce",
-                text.length(), chunks.size());
+        log.info("Input is large ({} chars) - splitting into {} chunks. Processing sequentially.", text.length(), chunks.size());
 
-        // Map Step
         return Flux.fromIterable(chunks)
                 .index()
-                .flatMapSequential(indexed -> callGroq(
+                .flatMapSequential(indexed -> callFastTier(
                         buildMapPrompt(indexed.getT2(), targetType, indexed.getT1().intValue() + 1, chunks.size()),
-                        GENEROUS_MAX_TOKENS,
+                        SUMMARY_MAX_TOKENS,
                         indexed.getT2()), CHUNK_CONCURRENCY)
                 .collectList()
                 .flatMap(extractedNotes -> {
-                    // Reduce Step
                     String combinedNotes = String.join("\n\n", extractedNotes);
-                    return callGroq(buildSmartPrompt(combinedNotes, targetType), GENEROUS_MAX_TOKENS, combinedNotes);
+                    return callFastTier(buildSmartPrompt(combinedNotes, targetType), SUMMARY_MAX_TOKENS, combinedNotes);
                 });
     }
 
@@ -77,11 +77,11 @@ public class LLMSummarizationService {
 
     private String buildSmartPrompt(String text, OptimizationRequest.TargetType targetType) {
         if (targetType == OptimizationRequest.TargetType.INSTRUCTION) {
-            return "You are an Expert Prompt Engineer. Your task is to refine and condense the following user instruction to be as concise as possible for another LLM, without losing ANY specific requirements, constraints, or context.\n\n"
-                    + getBaseRules() + "\n\nUser Instruction to Optimize:\n" + text;
+            return "Refine and condense the following instruction. Preserve all requirements and constraints. Be concise.\n\n"
+                    + getBaseRules() + "\n\nInput:\n" + text;
         } else {
-            return "You are a Context Optimization Engine. Your task is to compress the following document. Retain all factual data, architectural decisions, parameters, and structural integrity, but aggressively compress the prose.\n\n"
-                    + getBaseRules() + "\n\nDocument to Optimize:\n" + text;
+            return "Compress the following document. Retain all factual data and parameters. Output strictly as bulleted notes.\n\n"
+                    + getBaseRules() + "\n\nDocument:\n" + text;
         }
     }
 
@@ -112,11 +112,11 @@ public class LLMSummarizationService {
         return chunks;
     }
 
-    private Mono<String> callGroq(String prompt, int maxTokens, String fallbackSource) {
+    private Mono<String> callFastTier(String prompt, int maxTokens, String fallbackSource) {
         Map<String, Object> requestBody = Map.of(
-                "model", model,
+                "model", activeModel,
                 "messages", List.of(Map.of("role", "user", "content", prompt)),
-                "temperature", 0.1, // Lower temperature for more deterministic/strict extraction
+                "temperature", 0.1,
                 "max_tokens", maxTokens
         );
 
@@ -129,46 +129,47 @@ public class LLMSummarizationService {
                                     try {
                                         com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
                                         mapper.configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-                                        GroqResponse groqResponse = mapper.readValue(responseBody, GroqResponse.class);
-                                        if (groqResponse != null && groqResponse.choices != null && !groqResponse.choices.isEmpty()) {
-                                            return Mono.just(groqResponse.choices.get(0).message.content);
+
+                                        FastTierResponse fastTierResponse = mapper.readValue(responseBody, FastTierResponse.class);
+                                        if (fastTierResponse != null && fastTierResponse.getChoices() != null && !fastTierResponse.getChoices().isEmpty()) {
+                                            return Mono.just(fastTierResponse.getChoices().get(0).getMessage().getContent());
                                         }
-                                        return Mono.just(fallbackSource); // Reverting to original source on failure to prevent data loss
+                                        return Mono.just(fallbackSource);
                                     } catch (Exception e) {
-                                        log.error("Error parsing Groq response: {}", responseBody);
+                                        log.error("Error parsing Fast-Tier response: {}", responseBody);
                                         return Mono.just(fallbackSource);
                                     }
                                 });
                     } else {
                         return response.bodyToMono(String.class)
                                 .flatMap(errorBody -> {
-                                    log.error("Groq API error status: {}, body: {}", response.statusCode(), errorBody);
+                                    log.error("Fast-Tier API error status: {}, body: {}", response.statusCode(), errorBody);
                                     return Mono.just(fallbackSource);
                                 })
-                                .switchIfEmpty(Mono.fromRunnable(() -> log.error("Groq API error status: {}, no error body", response.statusCode()))
+                                .switchIfEmpty(Mono.fromRunnable(() -> log.error("Fast-Tier API error status: {}, no error body", response.statusCode()))
                                         .then(Mono.just(fallbackSource)));
                     }
                 })
                 .onErrorResume(e -> {
-                    log.error("Error calling Groq API: {}, using fallback", e.getMessage());
+                    log.error("Error calling Fast-Tier API: {}, using fallback", e.getMessage());
                     return Mono.just(fallbackSource);
                 });
     }
 
     @Data
-    private static class GroqResponse {
+    private static class FastTierResponse {
         @JsonProperty("choices")
-        private List<GroqChoice> choices;
+        private List<FastTierChoice> choices;
     }
 
     @Data
-    private static class GroqChoice {
+    private static class FastTierChoice {
         @JsonProperty("message")
-        private GroqMessage message;
+        private FastTierMessage message;
     }
 
     @Data
-    private static class GroqMessage {
+    private static class FastTierMessage {
         @JsonProperty("content")
         private String content;
     }
