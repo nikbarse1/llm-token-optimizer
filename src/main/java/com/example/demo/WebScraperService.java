@@ -1,7 +1,8 @@
 package com.example.demo;
 
-import com.example.dto.UnifiedAnalysisResponse;
+import com.example.demo.dto.UnifiedAnalysisResponse;
 import lombok.extern.slf4j.Slf4j;
+import org.jsoup.Connection;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.springframework.beans.factory.annotation.Value;
@@ -11,7 +12,6 @@ import reactor.core.publisher.Mono;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.time.LocalDateTime;
 
 @Service
 @Slf4j
@@ -24,103 +24,161 @@ public class WebScraperService {
     private String userAgent;
 
     public Mono<WebScrapingResult> scrapeUrl(String url) {
+
         return Mono.fromCallable(() -> {
+
             long startTime = System.currentTimeMillis();
+
             log.info("Starting URL scraping: {}", url);
-            
+
             try {
-                Document doc = Jsoup.connect(url)
+
+                Connection.Response response = Jsoup.connect(url)
                         .userAgent(userAgent)
                         .timeout(timeoutMs)
                         .followRedirects(true)
-                        .get();
+                        .ignoreHttpErrors(true)
+                        .ignoreContentType(false)
+                        .execute();
 
                 long responseTime = System.currentTimeMillis() - startTime;
-                
-                // Extract title
+
+                int statusCode = response.statusCode();
+                String finalUrl = response.url().toString();
+
+                log.info("HTTP {} received for {}", statusCode, finalUrl);
+
+                if (statusCode < 200 || statusCode >= 300) {
+
+                    UnifiedAnalysisResponse.UrlMetadata metadata =
+                            UnifiedAnalysisResponse.UrlMetadata.builder()
+                                    .originalUrl(url)
+                                    .finalUrl(finalUrl)
+                                    .domain(extractDomain(finalUrl))
+                                    .title("")
+                                    .responseTime((int) responseTime)
+                                    .isAccessible(false)
+                                    .build();
+
+                    return new WebScrapingResult("", metadata);
+                }
+
+                Document doc = response.parse();
+
                 String title = doc.title();
-                if (title.isEmpty()) {
+                if (title == null || title.isBlank()) {
                     title = extractTitleFromH1(doc);
                 }
-                
-                // Extract main content
-                String content = extractMainContent(doc);
-                
-                // Build metadata
-                UnifiedAnalysisResponse.UrlMetadata metadata = UnifiedAnalysisResponse.UrlMetadata.builder()
-                        .originalUrl(url)
-                        .finalUrl(doc.location())
-                        .domain(extractDomain(doc.location()))
-                        .title(title)
-                        .responseTime((int) responseTime)
-                        .isAccessible(true)
-                        .build();
 
-                log.info("URL scraping completed: {} chars extracted in {}ms", 
-                        content.length(), responseTime);
+                String content = extractMainContent(doc);
+
+                UnifiedAnalysisResponse.UrlMetadata metadata =
+                        UnifiedAnalysisResponse.UrlMetadata.builder()
+                                .originalUrl(url)
+                                .finalUrl(finalUrl)
+                                .domain(extractDomain(finalUrl))
+                                .title(title)
+                                .responseTime((int) responseTime)
+                                .isAccessible(true)
+                                .build();
+
+                log.info(
+                        "Successfully scraped {} characters from {} in {} ms",
+                        content.length(),
+                        finalUrl,
+                        responseTime
+                );
 
                 return new WebScrapingResult(content, metadata);
-                
+
             } catch (IOException e) {
+
+                long responseTime = System.currentTimeMillis() - startTime;
+
                 log.error("Failed to scrape URL: {}", url, e);
-                UnifiedAnalysisResponse.UrlMetadata metadata = UnifiedAnalysisResponse.UrlMetadata.builder()
-                        .originalUrl(url)
-                        .finalUrl(url)
-                        .domain(extractDomain(url))
-                        .title("")
-                        .responseTime((int) (System.currentTimeMillis() - startTime))
-                        .isAccessible(false)
-                        .build();
-                
+
+                UnifiedAnalysisResponse.UrlMetadata metadata =
+                        UnifiedAnalysisResponse.UrlMetadata.builder()
+                                .originalUrl(url)
+                                .finalUrl(url)
+                                .domain(extractDomain(url))
+                                .title("")
+                                .responseTime((int) responseTime)
+                                .isAccessible(false)
+                                .build();
+
                 return new WebScrapingResult("", metadata);
             }
-        })
-        .onErrorResume(e -> {
-            log.error("Error during URL scraping: {}", e.getMessage());
-            UnifiedAnalysisResponse.UrlMetadata metadata = UnifiedAnalysisResponse.UrlMetadata.builder()
-                    .originalUrl(url)
-                    .finalUrl(url)
-                    .domain(extractDomain(url))
-                    .title("")
-                    .responseTime(0)
-                    .isAccessible(false)
-                    .build();
-            
+
+        }).onErrorResume(e -> {
+
+            log.error("Unexpected error while scraping {}: {}", url, e.getMessage(), e);
+
+            UnifiedAnalysisResponse.UrlMetadata metadata =
+                    UnifiedAnalysisResponse.UrlMetadata.builder()
+                            .originalUrl(url)
+                            .finalUrl(url)
+                            .domain(extractDomain(url))
+                            .title("")
+                            .responseTime(0)
+                            .isAccessible(false)
+                            .build();
+
             return Mono.just(new WebScrapingResult("", metadata));
         });
     }
 
     private String extractMainContent(Document doc) {
-        StringBuilder content = new StringBuilder();
-        
-        // Try to find main content areas
-        if (doc.select("main").size() > 0) {
-            content.append(doc.select("main").text());
-        } else if (doc.select("article").size() > 0) {
-            content.append(doc.select("article").text());
-        } else if (doc.select(".content, .main-content, .post-content").size() > 0) {
-            content.append(doc.select(".content, .main-content, .post-content").text());
+
+        String content;
+
+        if (!doc.select("main").isEmpty()) {
+            content = doc.select("main").text();
+
+        } else if (!doc.select("article").isEmpty()) {
+            content = doc.select("article").text();
+
+        } else if (!doc.select("div[role=main]").isEmpty()) {
+            content = doc.select("div[role=main]").text();
+
+        } else if (!doc.select(".content").isEmpty()) {
+            content = doc.select(".content").text();
+
+        } else if (!doc.select(".main-content").isEmpty()) {
+            content = doc.select(".main-content").text();
+
+        } else if (!doc.select(".post-content").isEmpty()) {
+            content = doc.select(".post-content").text();
+
         } else {
-            // Fallback to body content
-            content.append(doc.body().text());
+            content = doc.body().text();
         }
-        
-        // Clean up the content
-        return cleanText(content.toString());
+
+        return cleanText(content);
     }
 
     private String extractTitleFromH1(Document doc) {
-        return doc.select("h1").first() != null ? doc.select("h1").first().text() : "";
+
+        if (doc.selectFirst("h1") != null) {
+            return doc.selectFirst("h1").text();
+        }
+
+        return "";
     }
 
     private String cleanText(String text) {
+
+        if (text == null) {
+            return "";
+        }
+
         return text
                 .replaceAll("\\s+", " ")
-                .replaceAll("\\n+", "\n")
                 .trim();
     }
 
     private String extractDomain(String url) {
+
         try {
             URI uri = new URI(url);
             return uri.getHost();
@@ -129,5 +187,9 @@ public class WebScraperService {
         }
     }
 
-    public record WebScrapingResult(String content, UnifiedAnalysisResponse.UrlMetadata metadata) {}
+    public record WebScrapingResult(
+            String content,
+            UnifiedAnalysisResponse.UrlMetadata metadata
+    ) {
+    }
 }
