@@ -1,14 +1,17 @@
-# Contributing to LLM Token Optimizer
+# Contributing to Advanced LLM Gateway & Token Optimizer
 
-Thank you for your interest in contributing! This document provides guidelines for contributing to the project.
+Thank you for your interest in contributing! This document provides guidelines for contributing to this sophisticated LLM gateway project.
 
 ## 🎯 Ways to Contribute
 
-- **Bug Reports**: Report bugs via GitHub Issues
-- **Feature Requests**: Suggest new features or improvements
-- **Code Contributions**: Submit pull requests with bug fixes or new features
-- **Documentation**: Improve README, code comments, or add examples
-- **Testing**: Add unit tests or integration tests
+- **🐛 Bug Reports**: Report bugs via GitHub Issues with detailed reproduction steps
+- **💡 Feature Requests**: Suggest new features or improvements for token optimization, chat capabilities, or provider integrations
+- **🔧 Code Contributions**: Submit pull requests with bug fixes or new features
+- **📚 Documentation**: Improve README, API docs, code comments, or add examples
+- **🧪 Testing**: Add unit tests or integration tests for better coverage
+- **🔌 Provider Integrations**: Add support for new LLM providers
+- **🎨 UI/UX**: Improve the web interface and user experience
+- **📊 Analytics**: Enhance metrics, monitoring, and cost tracking features
 
 ## 🚀 Getting Started
 
@@ -26,21 +29,56 @@ Thank you for your interest in contributing! This document provides guidelines f
 ## 💻 Development Setup
 
 ### Prerequisites
-- Java 21+
-- Maven 3.9+
-- Git
-- Your favorite IDE (IntelliJ IDEA, Eclipse, VS Code)
+- **Java 21+** (required for Spring Boot 4.x)
+- **Maven 3.9+** (for dependency management)
+- **Git** (version control)
+- **Docker** (optional, for containerized testing)
+- **API Keys**:
+  - Azure AI Inference or Groq API key (required)
+  - Gemini API key (optional, for advanced features)
+- Your favorite IDE (IntelliJ IDEA recommended)
 
-### Build and Test
+### Initial Setup
 ```bash
-# Build the project
+# Clone your fork
+git clone https://github.com/your-username/demo-for-llm.git
+cd demo-for-llm
+
+# Set up environment variables
+cp .env.example .env
+# Edit .env with your API keys
+
+# Install dependencies and build
 mvn clean install
 
 # Run tests
 mvn test
 
-# Run the application
+# Start the application
 mvn spring-boot:run
+```
+
+### Development Workflow
+```bash
+# Create a feature branch
+git checkout -b feature/your-feature-name
+
+# Make your changes
+# ...
+
+# Run tests frequently
+mvn test
+
+# Build to ensure no compilation errors
+mvn clean compile
+
+# Run application locally for testing
+mvn spring-boot:run
+
+# Test APIs
+curl -X POST http://localhost:8080/api/v1/tokens/count \
+  -H "Content-Type: application/json" \
+  -d '{"text":"test"}'
 ```
 
 ## 📝 Code Guidelines
@@ -48,44 +86,220 @@ mvn spring-boot:run
 ### Java Code Style
 - Follow standard Java naming conventions
 - Use meaningful variable and method names
-- Keep methods focused and concise (< 50 lines)
-- Add JavaDoc for public methods and classes
+- Keep methods focused and concise (< 50 lines preferred)
+- Add comprehensive JavaDoc for public methods and classes
 - Use Lombok annotations to reduce boilerplate
+- Apply reactive programming patterns with WebFlux
+- Use proper exception handling with custom exceptions
 
-### Example:
+### Architecture Guidelines
+- **Separation of Concerns**: Keep controllers, services, and repositories distinct
+- **Dependency Injection**: Use Spring's constructor injection
+- **Reactive Programming**: Use Mono/Flux for async operations
+- **Error Handling**: Use GlobalExceptionHandler for consistent error responses
+- **Configuration**: Externalize configuration in properties files
+- **Testing**: Write unit tests for services and integration tests for controllers
+
+### Code Examples:
+
+#### Service Layer Example:
 ```java
 /**
- * Counts tokens in the provided text using OpenAI's tokenization algorithm.
+ * Processes chat requests with intelligent routing and optimization.
  * 
- * @param text The text to count tokens for
- * @return The number of tokens
+ * @param instruction The user instruction
+ * @param file Optional document file
+ * @param chatId Session identifier for context
+ * @return Mono containing the AI response
  */
-public int countTokens(String text) {
-    if (text == null || text.isBlank()) {
-        return 0;
-    }
-    return encoding.countTokens(text);
+public Mono<AiChatResponse> processChat(
+        String instruction, 
+        MultipartFile file, 
+        String chatId,
+        String provider,
+        int contextWindow) {
+    
+    return Mono.fromCallable(() -> validateInputs(instruction, file))
+            .subscribeOn(Schedulers.boundedElastic())
+            .flatMap(validated -> resolveDocumentContext(file))
+            .flatMap(context -> orchestrateChat(instruction, context, chatId, provider, contextWindow))
+            .onErrorMap(ValidationException.class, ex -> new InvalidRequestException(ex.getMessage()))
+            .onErrorResume(WebClientException.class, ex -> handleProviderError(ex));
 }
 ```
 
-### Testing
-- Write unit tests for all new features
-- Aim for >80% code coverage
-- Use descriptive test method names
-- Follow AAA pattern: Arrange, Act, Assert
+#### Controller Example:
+```java
+/**
+ * Advanced chat endpoint supporting file uploads and URL processing.
+ */
+@PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+public Mono<AiChatResponse> chat(
+        @RequestParam("instruction") String instruction,
+        @RequestParam(value = "file", required = false) MultipartFile file,
+        @RequestParam(value = "url", required = false) String url,
+        @RequestParam(value = "chatId", required = false) String chatId,
+        @RequestParam(value = "provider", defaultValue = "FAST_TIER") String provider,
+        @RequestParam(value = "contextWindow", defaultValue = "8192") int contextWindow,
+        @RequestHeader(value = "X-Developer-Mode", defaultValue = "false") boolean isDevMode) {
+    
+    log.info("Chat request - ChatId: {}, Provider: {}, File: {}, URL: {}", 
+            chatId, provider, file != null, url != null);
+    
+    return gatewayOrchestrationService.processStatefulChat(
+            instruction, file, url, chatId, provider, contextWindow, isDevMode);
+}
+```
 
-### Example:
+### Testing Guidelines
+- Write unit tests for all new features and services
+- Aim for >80% code coverage
+- Use descriptive test method names following the pattern `methodName_condition_expectedResult`
+- Follow AAA pattern: Arrange, Act, Assert
+- Use Mockito for mocking dependencies
+- Test reactive streams with StepVerifier
+- Include integration tests for API endpoints
+
+#### Unit Test Example:
+```java
+@ExtendWith(MockitoExtension.class)
+class TokenCounterServiceTest {
+    
+    @Mock
+    private Encoding encoding;
+    
+    @InjectMocks
+    private TokenCounterService tokenService;
+    
+    @Test
+    void countTokens_withValidText_returnsTokenCount() {
+        // Arrange
+        String text = "Hello, world!";
+        when(encoding.countTokens(text)).thenReturn(3);
+        
+        // Act
+        TokenResponse response = tokenService.countTokens(text);
+        
+        // Assert
+        assertEquals(3, response.getTokenCount());
+        assertEquals(text, response.getOriginalText());
+        verify(encoding).countTokens(text);
+    }
+    
+    @Test
+    void countTokens_withNullText_returnsZero() {
+        // Act
+        TokenResponse response = tokenService.countTokens(null);
+        
+        // Assert
+        assertEquals(0, response.getTokenCount());
+    }
+}
+```
+
+#### Reactive Test Example:
 ```java
 @Test
-void testCountTokens_withValidText() {
+void processChat_withValidRequest_returnsResponse() {
     // Arrange
-    String text = "Hello, world!";
+    String instruction = "Test instruction";
+    String chatId = "test-chat-123";
+    
+    when(historyRepository.findByChatId(chatId))
+            .thenReturn(Mono.just(new ChatSessionState()));
+    when(providerRegistry.getProvider("FAST_TIER"))
+            .thenReturn(mockProvider);
+    when(mockProvider.askAi(any()))
+            .thenReturn(Mono.just("Test response"));
+    
+    // Act & Assert
+    StepVerifier.create(gatewayService.processStatefulChat(
+            instruction, null, null, chatId, "FAST_TIER", 8192, false))
+            .assertNext(response -> {
+                assertEquals("Test response", response.getUserReadableMessage());
+                assertEquals(chatId, response.getChatId());
+            })
+            .verifyComplete();
+}
+```
+
+### Feature-Specific Guidelines
+
+#### 🔌 Adding New LLM Providers
+1. **Create Provider Implementation**:
+   ```java
+   @Component
+   public class NewLlmProvider implements LlmProvider {
+       @Override
+       public Mono<String> askAi(String prompt) {
+           // Implementation for new provider
+       }
+   }
+   ```
+
+2. **Register in ProviderRegistry**:
+   ```java
+   @Bean
+   public LlmProviderRegistry providerRegistry() {
+       return new LlmProviderRegistry(Map.of(
+           "NEW_PROVIDER", new NewLlmProvider(),
+           "FAST_TIER", new FastTierLlmProvider(),
+           "GEMINI", new GeminiLlmProvider()
+       ));
+   }
+   ```
+
+3. **Add Configuration Properties**:
+   ```properties
+   newllm.api.key=${NEW_LLM_API_KEY:}
+   newllm.base.url=https://api.newllm.com
+   newllm.model=default-model
+   ```
+
+#### 📊 Adding Metrics and Analytics
+1. **Create Metrics Component**:
+   ```java
+   @Component
+   public class MetricsCollector {
+       private final MeterRegistry meterRegistry;
+       
+       public void recordTokenUsage(String provider, int tokens) {
+           Counter.builder("llm.tokens.used")
+                   .tag("provider", provider)
+                   .register(meterRegistry)
+                   .increment(tokens);
+       }
+   }
+   ```
+
+2. **Add Custom Metrics Endpoints**:
+   ```java
+   @RestController
+   @RequestMapping("/api/metrics")
+   public class MetricsController {
+       @GetMapping("/usage")
+       public Map<String, Object> getUsageMetrics() {
+           // Return custom metrics
+       }
+   }
+   ```
+
+#### 🧪 Testing File Upload Features
+```java
+@Test
+void chat_withFileUpload_processesContent() throws IOException {
+    // Arrange
+    MockMultipartFile file = new MockMultipartFile(
+            "file", "test.txt", "text/plain", "Test content".getBytes());
     
     // Act
-    int tokenCount = tokenService.countTokens(text);
+    Mono<AiChatResponse> result = controller.chat(
+            "Summarize this", file, null, "test-123", "FAST_TIER", 8192, false);
     
     // Assert
-    assertTrue(tokenCount > 0);
+    StepVerifier.create(result)
+            .assertNext(response -> assertEquals("FILE", response.getSourceType()))
+            .verifyComplete();
 }
 ```
 

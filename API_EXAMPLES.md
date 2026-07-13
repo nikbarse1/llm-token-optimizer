@@ -1,22 +1,29 @@
 # API Examples
 
-This document provides comprehensive examples for using the LLM Token Optimizer API.
+This document provides comprehensive examples for using the Advanced LLM Gateway & Token Optimizer API.
 
 ## 📚 Table of Contents
 
-- [Token Counter API](#token-counter-api)
-- [Document Optimization API](#document-optimization-api)
+- [API v1 - Token Optimization](#api-v1---token-optimization)
+  - [Token Counter API](#token-counter-api)
+  - [Document Optimization API](#document-optimization-api)
+- [API v2 - Advanced Chat Gateway](#api-v2---advanced-chat-gateway)
+  - [Basic Chat](#basic-chat)
+  - [File Upload](#file-upload)
+  - [URL Processing](#url-processing)
+  - [Stateful Conversations](#stateful-conversations)
+  - [Provider Selection](#provider-selection)
 - [Error Handling](#error-handling)
 - [Code Examples](#code-examples)
+- [Advanced Features](#advanced-features)
 
 ---
 
-## Token Counter API
+## API v1 - Token Optimization
 
-### Endpoint
-```
-POST /api/v1/tokens/count
-```
+### Token Counter API
+
+**Endpoint**: `POST /api/v1/tokens/count`
 
 ### Basic Example
 
@@ -220,54 +227,228 @@ curl -X POST http://localhost:8080/api/v1/optimize \
 
 ---
 
+## API v2 - Advanced Chat Gateway
+
+### Basic Chat
+
+**Endpoint**: `POST /api/v2/chat`
+
+**Request**:
+```bash
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=What is machine learning?" \
+  -F "provider=FAST_TIER"
+```
+
+**Response**:
+```json
+{
+  "userReadableMessage": "Machine learning is a subset of artificial intelligence...",
+  "sourceType": "TEXT_ONLY",
+  "wasOptimized": true,
+  "optimizationMetrics": {
+    "routingDecision": {
+      "requestedProvider": "FAST_TIER",
+      "executedProvider": "FAST_TIER",
+      "actionTaken": "EXECUTED_AS_REQUESTED"
+    },
+    "billingImpact": {
+      "baselineTokens": 25,
+      "billedTokens": 25,
+      "tokensSaved": 0,
+      "savingsPercentage": 0.0
+    }
+  },
+  "chatId": "generated-session-id-12345"
+}
+```
+
+### File Upload
+
+**Request**:
+```bash
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=Summarize this document in 5 bullet points" \
+  -F "file=@research-paper.pdf" \
+  -F "provider=GEMINI" \
+  -H "X-Developer-Mode: true"
+```
+
+**Response**:
+```json
+{
+  "userReadableMessage": "• ML enables systems to learn from data without explicit programming\n• Deep learning uses neural networks with multiple layers\n• Applications include image recognition, NLP, and game playing\n• Future research focuses on explainable AI and transfer learning\n• Ethical considerations include bias and privacy concerns",
+  "sourceType": "FILE",
+  "wasOptimized": true,
+  "optimizationMetrics": {
+    "routingDecision": {
+      "requestedProvider": "GEMINI",
+      "executedProvider": "GEMINI",
+      "actionTaken": "EXECUTED_AS_REQUESTED"
+    },
+    "billingImpact": {
+      "baselineTokens": 2500,
+      "billedTokens": 800,
+      "tokensSaved": 1700,
+      "savingsPercentage": 68.0
+    },
+    "compressionInternals": {
+      "tokensProcessed": 2500,
+      "tokensOutput": 150,
+      "compressionReduction": 94.0
+    }
+  },
+  "chatId": "generated-session-id-67890"
+}
+```
+
+### URL Processing
+
+**Request**:
+```bash
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=What are the main topics discussed in this article?" \
+  -F "url=https://example.com/tech-article" \
+  -F "contextWindow=4096"
+```
+
+**Response**:
+```json
+{
+  "userReadableMessage": "The article discusses artificial intelligence trends, cloud computing adoption, and cybersecurity challenges in 2024...",
+  "sourceType": "URL",
+  "wasOptimized": true,
+  "chatId": "generated-session-id-11111"
+}
+```
+
+### Stateful Conversations
+
+**First Request**:
+```bash
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=Explain quantum computing in simple terms" \
+  -F "chatId=quantum-session-001"
+```
+
+**Follow-up Request**:
+```bash
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=How does quantum entanglement relate to what you just explained?" \
+  -F "chatId=quantum-session-001"
+```
+
+**Response (Follow-up)**:
+```json
+{
+  "userReadableMessage": "Quantum entanglement is a phenomenon where quantum particles become interconnected...",
+  "sourceType": "TEXT_ONLY",
+  "wasOptimized": true,
+  "optimizationMetrics": {
+    "compressionInternals": {
+      "compressionSummary": "Instruction Snapshot:\nExplain quantum computing...\n\nHistory Snapshot:\nQuantum computing uses qubits instead of classical bits..."
+    }
+  },
+  "chatId": "quantum-session-001"
+}
+```
+
+### Provider Selection
+
+**Force Fast Tier**:
+```bash
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=Simple question: What is 2+2?" \
+  -F "provider=FAST_TIER"
+```
+
+**Force Gemini**:
+```bash
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=Explain the implications of Godel's incompleteness theorems" \
+  -F "provider=GEMINI"
+```
+
+**Smart Routing (Default)**:
+```bash
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=What is the capital of France?"
+```
+
+---
+
 ## Code Examples
 
 ### JavaScript (Fetch API)
 
 ```javascript
-// Token Counter
+// Token Counter (v1 API)
 async function countTokens(text) {
   const response = await fetch('http://localhost:8080/api/v1/tokens/count', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text }),
   });
-  
-  if (!response.ok) {
-    throw new Error('Failed to count tokens');
-  }
-  
   return await response.json();
 }
 
-// Usage
-countTokens('Hello, world!')
-  .then(result => console.log('Token count:', result.tokenCount))
-  .catch(error => console.error('Error:', error));
-
-// Document Optimizer
+// Document Optimizer (v1 API)
 async function optimizeDocument(document, contextWindow = 16000) {
   const response = await fetch('http://localhost:8080/api/v1/optimize', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ document, contextWindow }),
   });
-  
-  if (!response.ok) {
-    throw new Error('Failed to optimize document');
-  }
-  
   return await response.json();
 }
 
-// Usage
-optimizeDocument('Long document text...', 8000)
-  .then(result => console.log('Reduction:', result.reductionPercentage + '%'))
-  .catch(error => console.error('Error:', error));
+// Advanced Chat (v2 API)
+async function chatWithLLM(instruction, options = {}) {
+  const formData = new FormData();
+  formData.append('instruction', instruction);
+  
+  if (options.file) formData.append('file', options.file);
+  if (options.url) formData.append('url', options.url);
+  if (options.chatId) formData.append('chatId', options.chatId);
+  if (options.provider) formData.append('provider', options.provider);
+  if (options.contextWindow) formData.append('contextWindow', options.contextWindow);
+  
+  const response = await fetch('http://localhost:8080/api/v2/chat', {
+    method: 'POST',
+    body: formData,
+    headers: { 'X-Developer-Mode': options.devMode || 'false' }
+  });
+  return await response.json();
+}
+
+// Usage examples
+async function demonstrateAPIs() {
+  // Token counting
+  const tokens = await countTokens('Hello, world!');
+  console.log('Token count:', tokens.tokenCount);
+  
+  // Document optimization
+  const optimized = await optimizeDocument('Long document text...', 8000);
+  console.log('Reduction:', optimized.reductionPercentage + '%');
+  
+  // Basic chat
+  const chat1 = await chatWithLLM('What is AI?');
+  console.log('Response:', chat1.userReadableMessage);
+  
+  // Chat with file
+  const fileInput = document.querySelector('input[type="file"]');
+  const chat2 = await chatWithLLM('Summarize this document', { 
+    file: fileInput.files[0],
+    provider: 'GEMINI'
+  });
+  console.log('File analysis:', chat2.userReadableMessage);
+  
+  // Continue conversation
+  const chat3 = await chatWithLLM('Tell me more', { 
+    chatId: chat2.chatId 
+  });
+  console.log('Continuation:', chat3.userReadableMessage);
+}
 ```
 
 ### Python (Requests)
@@ -387,13 +568,69 @@ curl -X POST "$API_URL/optimize" \
 
 ---
 
+## Advanced Features
+
+### Developer Mode
+
+Enable detailed metrics by setting the `X-Developer-Mode: true` header:
+
+```bash
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=Explain blockchain" \
+  -H "X-Developer-Mode: true"
+```
+
+This returns comprehensive optimization metrics including:
+- Token compression statistics
+- Provider routing decisions
+- Cost optimization details
+- Context window utilization
+
+### Context Window Management
+
+Adjust context window size based on your needs:
+
+```bash
+# Small context for simple queries
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=What is 2+2?" \
+  -F "contextWindow=1024"
+
+# Large context for complex documents
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=Analyze this research paper" \
+  -F "file=@paper.pdf" \
+  -F "contextWindow=32768"
+```
+
+### Smart Routing Examples
+
+The system automatically routes requests based on complexity:
+
+```bash
+# Simple query - routes to FAST_TIER
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=What is the weather?"
+
+# Complex query - may route to GEMINI
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=Explain the philosophical implications of quantum mechanics"
+
+# With document - routes based on content
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=Summarize this legal document" \
+  -F "file=@contract.pdf"
+```
+
+---
+
 ## Testing with Postman
 
 ### Import Collection
 
 You can import these examples into Postman:
 
-1. Create a new collection named "LLM Token Optimizer"
+1. Create a new collection named "Advanced LLM Gateway"
 2. Add requests with the examples above
 3. Set base URL as a variable: `{{baseUrl}}` = `http://localhost:8080`
 
@@ -402,7 +639,64 @@ You can import these examples into Postman:
 ```json
 {
   "baseUrl": "http://localhost:8080",
-  "apiVersion": "v1"
+  "apiVersion": "v2",
+  "defaultProvider": "FAST_TIER",
+  "defaultContextWindow": "8192"
+}
+```
+
+### Postman Request Examples
+
+**Token Count (v1)**:
+```json
+{
+  "method": "POST",
+  "header": [
+    {
+      "key": "Content-Type",
+      "value": "application/json"
+    }
+  ],
+  "body": {
+    "mode": "raw",
+    "raw": "{\"text\":\"Sample text for token counting\"}"
+  },
+  "url": {
+    "raw": "{{baseUrl}}/api/v1/tokens/count",
+    "host": ["{{baseUrl}}"],
+    "path": ["api", "v1", "tokens", "count"]
+  }
+}
+```
+
+**Advanced Chat (v2)**:
+```json
+{
+  "method": "POST",
+  "header": [
+    {
+      "key": "X-Developer-Mode",
+      "value": "true"
+    }
+  ],
+  "body": {
+    "mode": "formdata",
+    "formdata": [
+      {
+        "key": "instruction",
+        "value": "Explain artificial intelligence"
+      },
+      {
+        "key": "provider",
+        "value": "GEMINI"
+      }
+    ]
+  },
+  "url": {
+    "raw": "{{baseUrl}}/api/v2/chat",
+    "host": ["{{baseUrl}}"],
+    "path": ["api", "v2", "chat"]
+  }
 }
 ```
 
@@ -413,19 +707,35 @@ You can import these examples into Postman:
 Currently, the API does not implement rate limiting, but when deploying to production, consider:
 
 - Implementing rate limiting per IP or API key
-- Setting appropriate timeout values
+- Setting appropriate timeout values for file uploads
 - Caching frequently requested token counts
-- Monitoring API usage
+- Monitoring API usage and costs
+- Implementing quotas for different user tiers
 
 ---
 
 ## Best Practices
 
-1. **Batch Processing**: For multiple texts, consider batching requests
-2. **Error Handling**: Always implement proper error handling
-3. **Timeouts**: Set appropriate timeout values for large documents
-4. **Caching**: Cache token counts for frequently used texts
-5. **Validation**: Validate input before sending to API
+### API Usage
+1. **Choose the Right API Version**: Use v1 for simple token operations, v2 for advanced features
+2. **Provider Selection**: Let smart routing handle simple queries, specify providers for complex tasks
+3. **Context Management**: Adjust context windows based on document complexity
+4. **Error Handling**: Always implement proper error handling for network issues
+5. **File Optimization**: Compress files before upload for faster processing
+
+### Performance Optimization
+1. **Batch Processing**: For multiple documents, consider parallel processing
+2. **Timeouts**: Set appropriate timeout values for large documents
+3. **Caching**: Cache responses for repeated queries
+4. **Validation**: Validate input before sending to API
+5. **Monitoring**: Track token usage and costs in real-time
+
+### Security
+1. **API Key Management**: Rotate API keys regularly
+2. **Input Validation**: Validate all user inputs
+3. **File Security**: Scan uploaded files for malware
+4. **Access Control**: Implement proper authentication in production
+5. **Audit Logging**: Log all API calls for security monitoring
 
 ---
 
@@ -433,3 +743,4 @@ For more information, see:
 - [README.md](README.md) - Full documentation
 - [Swagger UI](http://localhost:8080/swagger-ui.html) - Interactive API documentation
 - [SETUP.md](SETUP.md) - Setup instructions
+- [CONTRIBUTING.md](CONTRIBUTING.md) - Contribution guidelines

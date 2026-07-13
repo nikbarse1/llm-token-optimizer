@@ -1,6 +1,6 @@
-# 🚀 LLM Token Optimizer
+# 🚀 Advanced LLM Gateway & Token Optimizer
 
-A Spring Boot application that helps developers optimize text for Large Language Model (LLM) context windows by counting tokens and intelligently summarizing documents.
+A sophisticated Spring Boot application that provides intelligent LLM token optimization, multi-provider routing, and stateful chat capabilities with document processing features.
 
 [![Java](https://img.shields.io/badge/Java-21-orange.svg)](https://www.oracle.com/java/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.1.0-brightgreen.svg)](https://spring.io/projects/spring-boot)
@@ -22,49 +22,95 @@ A Spring Boot application that helps developers optimize text for Large Language
 
 ## ✨ Features
 
-- **Token Counting**: Accurately count tokens using OpenAI's tokenization algorithm (jtokkit)
-- **Document Optimization**: Automatically summarize long documents to fit within LLM context windows
-- **Multiple LLM Support**: Integrates with Groq API (supports Llama, Mixtral models)
-- **Fallback Mechanism**: Local extractive summarization when API is unavailable
-- **Interactive UI**: Beautiful web interface for testing the API
-- **RESTful API**: Well-documented endpoints with Swagger/OpenAPI
-- **Docker Ready**: Containerized deployment with Docker Compose
-- **Production Ready**: Comprehensive error handling, logging, and validation
+### Core Capabilities
+- **🔢 Token Counting**: Accurate token counting using OpenAI's tokenization algorithm (jtokkit)
+- **📝 Document Optimization**: Intelligent summarization to fit within LLM context windows
+- **💬 Stateful Chat**: Persistent conversation sessions with context management
+- **📁 File Processing**: Upload and extract text from PDF, DOCX, and other document formats
+- **🌐 Web Scraping**: Extract content from URLs for processing
+- **🎯 Smart Routing**: Intelligent LLM provider selection based on request complexity
+
+### Multi-Provider Support
+- **⚡ Fast Tier**: Groq/Azure AI Inference for rapid responses
+- **🧠 Gemini**: Google's Gemini AI for advanced reasoning
+- **🔄 Fallback**: Automatic provider switching for reliability
+
+### Advanced Features
+- **📊 Token Optimization**: Real-time token usage optimization and compression
+- **💾 Chat History**: Persistent chat sessions with intelligent compression
+- **🎛️ Context Management**: Dynamic context window management
+- **📈 Metrics & Analytics**: Detailed usage statistics and cost tracking
+- **🔒 Production Ready**: Comprehensive error handling, logging, and validation
+- **🐳 Docker Support**: Containerized deployment with health checks
+- **📚 API Documentation**: Full Swagger/OpenAPI integration
 
 ## 🏗️ Architecture
 
 ```
-┌─────────────┐
-│   Client    │
-│  (Browser)  │
-└──────┬──────┘
-       │
-       ▼
-┌─────────────────────────────────────┐
-│      Spring Boot Application        │
-│  ┌───────────────────────────────┐  │
-│  │   Controllers                 │  │
-│  │  - TokenController            │  │
-│  │  - TokenOptimizationController│  │
-│  └───────────┬───────────────────┘  │
-│              │                       │
-│  ┌───────────▼───────────────────┐  │
-│  │   Services                    │  │
-│  │  - OpenAiTokenService         │  │
-│  │  - TokenCounterService        │  │
-│  │  - LLMSummarizationService    │  │
-│  │  - TokenOptimizationService   │  │
-│  └───────────┬───────────────────┘  │
-│              │                       │
-└──────────────┼───────────────────────┘
-               │
-       ┌───────┴────────┐
-       │                │
-       ▼                ▼
-┌─────────────┐  ┌──────────────┐
-│   jtokkit   │  │  Groq API    │
-│  (Offline)  │  │  (Online)    │
-└─────────────┘  └──────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                        Client Layer                        │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
+│  │   Web UI    │  │   cURL/CLI  │  │   Third-party Apps  │ │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘ │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│                 Spring Boot Gateway                          │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │                  Controllers                           │  │
+│  │  ┌─────────────────┐  ┌─────────────────────────────┐  │  │
+│  │  │   Token API     │  │     Advanced Chat API       │  │  │
+│  │  │   (v1)          │  │        (v2)                │  │  │
+│  │  └─────────────────┘  └─────────────────────────────┘  │  │
+│  └─────────────────────────┬─────────────────────────────┘  │
+│                            │                               │
+│  ┌─────────────────────────▼─────────────────────────────┐  │
+│  │                 Orchestration Layer                    │  │
+│  │  ┌─────────────────────────────────────────────────┐  │  │
+│  │  │     AdvancedGatewayOrchestrationService        │  │  │
+│  │  │  - Context Management                          │  │  │
+│  │  │  - Chat History Compression                    │  │  │
+│  │  │  - Smart Provider Routing                       │  │  │
+│  │  │  - Token Optimization                           │  │  │
+│  │  └─────────────────────────────────────────────────┘  │  │
+│  └─────────────────────────┬─────────────────────────────┘  │
+│                            │                               │
+│  ┌─────────────────────────▼─────────────────────────────┐  │
+│  │                   Service Layer                       │  │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌───────────────┐ │  │
+│  │  │ Token       │  │ File Parser │  │ Web Scraper   │ │  │
+│  │  │ Counter     │  │ Service     │  │ Service       │ │  │
+│  │  └─────────────┘  └─────────────┘  └───────────────┘ │  │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌───────────────┐ │  │
+│  │  │ LLM         │  │ Token       │  │ Chat History  │ │  │
+│  │  │ Summarizer  │  │ Optimizer   │  │ Repository    │ │  │
+│  │  └─────────────┘  └─────────────┘  └───────────────┘ │  │
+│  └─────────────────────────┬─────────────────────────────┘  │
+│                            │                               │
+│  ┌─────────────────────────▼─────────────────────────────┐  │
+│  │                 Provider Registry                     │  │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌───────────────┐ │  │
+│  │  │ Fast Tier    │  │   Gemini     │  │ Provider      │ │  │
+│  │  │ (Groq/Azure) │  │   Provider   │  │ Registry     │ │  │
+│  │  └─────────────┘  └─────────────┘  └───────────────┘ │  │
+│  └─────────────────────────┬─────────────────────────────┘  │
+└────────────────────────────┼───────────────────────────────┘
+                             │
+         ┌───────────────────┴───────────────────┐
+         │                                       │
+         ▼                                       ▼
+┌─────────────────────┐               ┌─────────────────────┐
+│   External APIs    │               │   Local Processing  │
+│  ┌─────────────┐   │               │  ┌─────────────┐   │
+│  │ Groq/Azure  │   │               │  │   jtokkit   │   │
+│  │   Inference │   │               │  │  (Tokenizer)│   │
+│  └─────────────┘   │               │  └─────────────┘   │
+│  ┌─────────────┐   │               │  ┌─────────────┐   │
+│  │   Gemini    │   │               │  │  File       │   │
+│  │     API     │   │               │  │  Parsers    │   │
+│  └─────────────┘   │               │  └─────────────┘   │
+└─────────────────────┘               └─────────────────────┘
 ```
 
 ## 📦 Prerequisites
@@ -72,7 +118,9 @@ A Spring Boot application that helps developers optimize text for Large Language
 - **Java 21** or higher
 - **Maven 3.9+**
 - **Docker** (optional, for containerized deployment)
-- **Groq API Key** (free at [console.groq.com](https://console.groq.com/keys))
+- **API Keys**:
+  - **Groq/Azure AI Inference Key** (free at [console.groq.com](https://console.groq.com/keys) or [Azure AI](https://azure.microsoft.com/en-us/products/ai-services/ai-inference))
+  - **Gemini API Key** (optional, from [Google AI Studio](https://aistudio.google.com/app/apikey))
 
 ## 🚀 Quick Start
 
@@ -85,18 +133,29 @@ cd demo-for-llm
 
 ### 2. Set Up Environment Variables
 
-Create a file named `application-local.properties` in `src/main/resources/`:
+**Option A: Using application-local.properties (Recommended for Development)**
+
+Create a file: `src/main/resources/application-local.properties`
 
 ```properties
-llm.api.key=your-groq-api-key-here
-llm.model=llama-3.1-8b-instant
+# Fast Tier Configuration (Required)
+llm.fast_tier.base_url=https://models.inference.ai.azure.com/chat/completions
+llm.fast_tier.api.key=your-azure-groq-api-key-here
+llm.fast_tier.model=gpt-4o-mini
+
+# Gemini Configuration (Optional)
+gemini.api.key=your-gemini-api-key-here
 ```
 
-Or set environment variables:
+**Option B: Using Environment Variables**
 
 ```bash
-export LLM_API_KEY=your-groq-api-key-here
-export LLM_MODEL=llama-3.1-8b-instant
+# Fast Tier (Required)
+export LLM_API_KEY=your-azure-groq-api-key-here
+export LLM_MODEL=gpt-4o-mini
+
+# Gemini (Optional)
+export GEMINI_API_KEY=your-gemini-api-key-here
 ```
 
 ### 3. Build and Run
@@ -119,15 +178,19 @@ The application will start on `http://localhost:8080`
 
 ## 📚 API Documentation
 
-### Token Counter API
+The application provides two API versions:
+
+### 📊 API v1 - Token Optimization
+Basic token counting and document optimization endpoints.
+
+#### Token Counter API
 
 **Endpoint**: `POST /api/v1/tokens/count`
 
 **Request**:
 ```json
 {
-  "text": "Hello, how are you today?",
-  "model": "gpt-4"
+  "text": "Hello, how are you today?"
 }
 ```
 
@@ -142,14 +205,7 @@ The application will start on `http://localhost:8080`
 }
 ```
 
-**cURL Example**:
-```bash
-curl -X POST http://localhost:8080/api/v1/tokens/count \
-  -H "Content-Type: application/json" \
-  -d '{"text":"Hello, how are you today?"}'
-```
-
-### Document Optimization API
+#### Document Optimization API
 
 **Endpoint**: `POST /api/v1/optimize`
 
@@ -175,11 +231,72 @@ curl -X POST http://localhost:8080/api/v1/tokens/count \
 }
 ```
 
+### 💬 API v2 - Advanced Chat Gateway
+Stateful chat with file upload, URL processing, and intelligent routing.
+
+#### Chat API
+
+**Endpoint**: `POST /api/v2/chat`
+
+**Content-Type**: `multipart/form-data`
+
+**Parameters**:
+- `instruction` (required): The user's instruction or question
+- `file` (optional): Document file (PDF, DOCX, TXT, etc.)
+- `url` (optional): URL to scrape content from
+- `chatId` (optional): Session identifier for conversation continuity
+- `provider` (optional): LLM provider (`GEMINI`, `FAST_TIER`)
+- `contextWindow` (optional): Context window size (default: 8192)
+- `X-Developer-Mode` (header): Enable detailed metrics (default: false)
+
 **cURL Example**:
 ```bash
-curl -X POST http://localhost:8080/api/v1/optimize \
-  -H "Content-Type: application/json" \
-  -d '{"document":"Long text here...","contextWindow":16000}'
+# Basic chat
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=What is machine learning?"
+
+# Chat with file upload
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=Summarize this document" \
+  -F "file=@document.pdf"
+
+# Chat with URL
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=What's the main topic of this page?" \
+  -F "url=https://example.com/article"
+
+# Continue conversation
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=Can you explain more about that?" \
+  -F "chatId=abc-123-session-id"
+```
+
+**Response**:
+```json
+{
+  "userReadableMessage": "Machine learning is a subset of AI...",
+  "sourceType": "TEXT_ONLY",
+  "wasOptimized": true,
+  "optimizationMetrics": {
+    "routingDecision": {
+      "requestedProvider": "GEMINI",
+      "executedProvider": "FAST_TIER",
+      "actionTaken": "DOWNGRADED_TO_CHEAPER_MODEL"
+    },
+    "billingImpact": {
+      "baselineTokens": 1500,
+      "billedTokens": 800,
+      "tokensSaved": 700,
+      "savingsPercentage": 46.67
+    },
+    "compressionInternals": {
+      "tokensProcessed": 1200,
+      "tokensOutput": 600,
+      "compressionReduction": 50.0
+    }
+  },
+  "chatId": "abc-123-session-id"
+}
 ```
 
 ## ⚙️ Configuration
@@ -188,23 +305,44 @@ curl -X POST http://localhost:8080/api/v1/optimize \
 
 | Property | Description | Default |
 |----------|-------------|---------|
-| `llm.api.key` | Groq API key | Required |
-| `llm.model` | LLM model to use | `llama-3.1-8b-instant` |
+| `llm.fast_tier.base_url` | Fast tier API base URL | Azure AI Inference |
+| `llm.fast_tier.api.key` | Fast tier API key | Required |
+| `llm.fast_tier.model` | Fast tier model | `gpt-4o-mini` |
+| `gemini.api.key` | Gemini API key | Optional |
 | `server.port` | Server port | `8080` |
+| `spring.servlet.multipart.max-file-size` | Max file upload size | `50MB` |
+| `web.scraper.timeout` | Web scraper timeout | `10000ms` |
 
 ### Supported Models
 
-- `llama-3.1-8b-instant` (Fast, recommended)
+#### Fast Tier (Azure AI Inference/Groq)
+- `gpt-4o-mini` (Fast, cost-effective)
+- `llama-3.1-8b-instant` (Very fast)
 - `llama-3.3-70b-versatile` (More accurate)
 - `mixtral-8x7b-32768` (Large context window)
+
+#### Gemini (Google AI)
+- `gemini-1.5-flash` (Fast, versatile)
+- `gemini-1.5-pro` (Advanced reasoning)
+- `gemini-1.0-pro` (Legacy support)
+
+### Smart Routing Logic
+
+The system automatically routes requests based on:
+
+1. **Request Complexity**: Simple queries use FAST_TIER
+2. **Context Size**: Large documents may trigger compression
+3. **Provider Availability**: Automatic fallback if provider fails
+4. **Cost Optimization**: Prefer cheaper models for simple tasks
 
 ## 🐳 Docker Deployment
 
 ### Using Docker Compose (Recommended)
 
 ```bash
-# Set your API key
-export LLM_API_KEY=your-api-key-here
+# Copy and configure environment file
+cp .env.example .env
+# Edit .env with your API keys
 
 # Start the application
 docker-compose up -d
@@ -222,10 +360,11 @@ docker-compose down
 # Build the image
 docker build -t llm-token-optimizer .
 
-# Run the container
+# Run the container with environment variables
 docker run -d -p 8080:8080 \
-  -e LLM_API_KEY=your-api-key-here \
-  -e LLM_MODEL=llama-3.1-8b-instant \
+  -e LLM_API_KEY=your-azure-groq-api-key-here \
+  -e LLM_MODEL=gpt-4o-mini \
+  -e GEMINI_API_KEY=your-gemini-api-key-here \
   --name llm-optimizer \
   llm-token-optimizer
 ```
@@ -239,15 +378,31 @@ demo-for-llm/
 ├── src/
 │   ├── main/
 │   │   ├── java/com/example/demo/
-│   │   │   ├── config/           # Configuration classes
-│   │   │   ├── exception/        # Custom exceptions & handlers
-│   │   │   ├── *Controller.java  # REST controllers
-│   │   │   ├── *Service.java     # Business logic
-│   │   │   └── *.java            # DTOs and models
+│   │   │   ├── advancePlusOne/           # Advanced gateway features
+│   │   │   │   ├── AdvancedGatewayOrchestrationService.java
+│   │   │   │   ├── AiChatController2.java
+│   │   │   │   ├── LlmProvider*.java     # Provider implementations
+│   │   │   │   └── GatewayMessage.java   # Chat message model
+│   │   │   ├── config/                   # Configuration classes
+│   │   │   │   ├── LLMConfig.java
+│   │   │   │   ├── OpenApiConfig.java
+│   │   │   │   └── WebClientConfig.java
+│   │   │   ├── dto/                      # Data transfer objects
+│   │   │   │   └── UnifiedAnalysisResponse.java
+│   │   │   ├── exception/                # Custom exceptions & handlers
+│   │   │   │   ├── GlobalExceptionHandler.java
+│   │   │   │   └── LLMServiceException.java
+│   │   │   ├── llmrouter/                # LLM routing services
+│   │   │   │   ├── PrimaryLlmService.java
+│   │   │   │   └── GeminiResponse.java
+│   │   │   ├── *Controller.java          # REST controllers (v1 API)
+│   │   │   ├── *Service.java             # Core business logic
+│   │   │   └── *.java                    # Models and utilities
 │   │   └── resources/
-│   │       ├── static/           # Frontend files
+│   │       ├── static/                   # Frontend files
 │   │       └── application.properties
-│   └── test/                     # Unit tests
+│   └── test/                             # Unit tests
+├── .github/workflows/                    # CI/CD pipelines
 ├── Dockerfile
 ├── docker-compose.yml
 ├── pom.xml
@@ -311,20 +466,29 @@ curl -X POST http://localhost:8080/api/v1/optimize \
 
 ## 🎯 Use Cases
 
-### 1. Token Budget Management
-Calculate exact token counts before sending requests to LLM APIs to manage costs.
+### 📊 Token Optimization & Cost Management
+- **Token Budget Management**: Calculate exact token counts before sending requests to manage costs
+- **Context Window Optimization**: Automatically compress documents to fit within model limits
+- **Cost Estimation**: Estimate API costs across different providers with detailed metrics
+- **Smart Routing**: Automatically select the most cost-effective provider for each request
 
-### 2. Context Window Optimization
-Automatically compress long documents to fit within model context limits (e.g., GPT-4's 8K/32K tokens).
+### 💬 Conversational AI Applications
+- **Document Q&A**: Upload documents and ask questions about their content
+- **Web Content Analysis**: Extract and analyze information from URLs
+- **Multi-turn Conversations**: Maintain context across multiple interactions
+- **Research Assistant**: Process multiple documents and provide insights
 
-### 3. Cost Estimation
-Estimate API costs based on token counts for different LLM providers.
+### 🏢 Enterprise Integration
+- **RAG Pipeline Integration**: Pre-process documents for retrieval systems
+- **Content Analysis**: Analyze large volumes of text efficiently
+- **Customer Support**: Handle document-based customer queries
+- **Knowledge Management**: Extract and summarize information from corporate documents
 
-### 4. Prompt Engineering
-Optimize prompts to maximize information while minimizing token usage.
-
-### 5. Document Preprocessing
-Prepare documents for RAG (Retrieval-Augmented Generation) systems.
+### 🔧 Development & Testing
+- **Prompt Engineering**: Optimize prompts for maximum efficiency
+- **API Gateway**: Single interface for multiple LLM providers
+- **Load Testing**: Test different providers under various conditions
+- **Performance Monitoring**: Track token usage and costs in real-time
 
 ## 🔧 Troubleshooting
 

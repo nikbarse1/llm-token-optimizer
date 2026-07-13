@@ -1,16 +1,19 @@
 # Setup Guide
 
-This guide will help you set up the LLM Token Optimizer application on your local machine.
+This comprehensive guide will help you set up the Advanced LLM Gateway & Token Optimizer application on your local machine.
 
 ## 📋 Prerequisites Checklist
 
 Before you begin, ensure you have:
 
-- [ ] Java 21 or higher installed
-- [ ] Maven 3.9+ installed
-- [ ] Git installed
-- [ ] A Groq API key (free at [console.groq.com](https://console.groq.com/keys))
-- [ ] (Optional) Docker and Docker Compose for containerized deployment
+- [ ] **Java 21** or higher installed
+- [ ] **Maven 3.9+** installed
+- [ ] **Git** installed
+- [ ] **API Keys**:
+  - [ ] Azure AI Inference or Groq API key (required)
+  - [ ] Gemini API key (optional, for advanced features)
+- [ ] (Optional) **Docker** and **Docker Compose** for containerized deployment
+- [ ] (Optional) **IDE** - IntelliJ IDEA recommended for Java development
 
 ## 🔍 Verify Prerequisites
 
@@ -32,6 +35,13 @@ git --version
 # Should show: git version 2.x.x or higher
 ```
 
+### Check Docker (Optional)
+```bash
+docker --version
+docker-compose --version
+# Should show Docker and Docker Compose versions
+```
+
 ## 🚀 Installation Steps
 
 ### Step 1: Clone the Repository
@@ -41,12 +51,28 @@ git clone https://github.com/yourusername/demo-for-llm.git
 cd demo-for-llm
 ```
 
-### Step 2: Get Your Groq API Key
+### Step 2: Get Your API Keys
 
+#### Fast Tier API (Required)
+
+**Option 1: Azure AI Inference (Recommended)**
+1. Visit [Azure AI Inference](https://azure.microsoft.com/en-us/products/ai-services/ai-inference)
+2. Sign up for Azure account (free tier available)
+3. Create an AI Inference resource
+4. Get your API key and endpoint
+
+**Option 2: Groq API**
 1. Visit [https://console.groq.com/keys](https://console.groq.com/keys)
 2. Sign up or log in
 3. Create a new API key
-4. Copy the key (you'll need it in the next step)
+4. Copy the key (starts with `gsk_`)
+
+#### Gemini API (Optional)
+
+1. Visit [Google AI Studio](https://aistudio.google.com/app/apikey)
+2. Sign in with Google account
+3. Create a new API key
+4. Copy the key (starts with `AIza`)
 
 ### Step 3: Configure Environment Variables
 
@@ -55,28 +81,45 @@ cd demo-for-llm
 Create a file: `src/main/resources/application-local.properties`
 
 ```properties
-llm.api.key=gsk_your_actual_api_key_here
-llm.model=llama-3.1-8b-instant
+# Fast Tier Configuration (Required)
+llm.fast_tier.base_url=https://models.inference.ai.azure.com/chat/completions
+llm.fast_tier.api.key=your-azure-groq-api-key-here
+llm.fast_tier.model=gpt-4o-mini
+
+# Gemini Configuration (Optional)
+gemini.api.key=your-gemini-api-key-here
 ```
 
 **Option B: Using Environment Variables**
 
 **Windows (PowerShell):**
 ```powershell
-$env:LLM_API_KEY="gsk_your_actual_api_key_here"
-$env:LLM_MODEL="llama-3.1-8b-instant"
+# Fast Tier (Required)
+$env:LLM_API_KEY="your-azure-groq-api-key-here"
+$env:LLM_MODEL="gpt-4o-mini"
+
+# Gemini (Optional)
+$env:GEMINI_API_KEY="your-gemini-api-key-here"
 ```
 
 **Windows (Command Prompt):**
 ```cmd
-set LLM_API_KEY=gsk_your_actual_api_key_here
-set LLM_MODEL=llama-3.1-8b-instant
+# Fast Tier (Required)
+set LLM_API_KEY=your-azure-groq-api-key-here
+set LLM_MODEL=gpt-4o-mini
+
+# Gemini (Optional)
+set GEMINI_API_KEY=your-gemini-api-key-here
 ```
 
 **macOS/Linux:**
 ```bash
-export LLM_API_KEY="gsk_your_actual_api_key_here"
-export LLM_MODEL="llama-3.1-8b-instant"
+# Fast Tier (Required)
+export LLM_API_KEY="your-azure-groq-api-key-here"
+export LLM_MODEL="gpt-4o-mini"
+
+# Gemini (Optional)
+export GEMINI_API_KEY="your-gemini-api-key-here"
 ```
 
 **Option C: Using .env file (for Docker)**
@@ -86,10 +129,14 @@ Copy the example file:
 cp .env.example .env
 ```
 
-Edit `.env` and add your API key:
-```
-LLM_API_KEY=gsk_your_actual_api_key_here
-LLM_MODEL=llama-3.1-8b-instant
+Edit `.env` with your API keys:
+```bash
+# Fast Tier Configuration (Required)
+LLM_API_KEY=your-azure-groq-api-key-here
+LLM_MODEL=gpt-4o-mini
+
+# Gemini Configuration (Optional)
+GEMINI_API_KEY=your-gemini-api-key-here
 ```
 
 ### Step 4: Build the Project
@@ -156,7 +203,7 @@ docker-compose down
 
 ## 🧪 Testing the Setup
 
-### Test 1: Token Counter API
+### Test 1: Token Counter API (v1)
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/tokens/count \
@@ -175,7 +222,7 @@ Expected response:
 }
 ```
 
-### Test 2: Document Optimizer API
+### Test 2: Document Optimizer API (v1)
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/optimize \
@@ -186,11 +233,45 @@ curl -X POST http://localhost:8080/api/v1/optimize \
   }'
 ```
 
-### Test 3: Web UI
+### Test 3: Advanced Chat API (v2)
+
+```bash
+# Basic chat
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=What is machine learning?"
+
+# Chat with provider selection
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=Explain quantum computing" \
+  -F "provider=GEMINI" \
+  -H "X-Developer-Mode: true"
+
+# Chat with file upload (create a test file first)
+echo "This is a test document about artificial intelligence." > test.txt
+curl -X POST http://localhost:8080/api/v2/chat \
+  -F "instruction=Summarize this document" \
+  -F "file=@test.txt"
+```
+
+### Test 4: Web UI
 
 1. Open [http://localhost:8080](http://localhost:8080)
-2. Try the Token Counter tab
-3. Try the Document Optimizer tab
+2. Try the Token Counter tab (v1 API)
+3. Try the Document Optimizer tab (v1 API)
+4. Try the Advanced Chat features (v2 API)
+
+### Test 5: Health and Metrics
+
+```bash
+# Health check
+curl http://localhost:8080/actuator/health
+
+# Application info
+curl http://localhost:8080/actuator/info
+
+# Metrics (if enabled)
+curl http://localhost:8080/actuator/metrics
+```
 
 ## 🔧 Troubleshooting
 
