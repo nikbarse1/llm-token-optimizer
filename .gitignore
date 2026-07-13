@@ -57,6 +57,7 @@ application-dev.properties
 application-prod.properties
 application-*.properties
 !application.properties.example
+!src/test/resources/application-test.properties
 !application.properties
 
 # Logs and debugging
