@@ -2,6 +2,8 @@ package com.example.demo.advancePlusOne;
 
 import com.example.demo.*;
 import com.example.demo.OptimizationRequest.TargetType;
+import com.example.demo.embeddings.GeminiEmbeddingService;
+import com.example.demo.embeddings.SemanticCacheRepository;
 import com.example.demo.llmrouter.AiChatResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -25,14 +27,15 @@ public class AdvancedGatewayOrchestrationService {
     private final TokenCounterService tokenCounterService;
     private final FileParserService fileParserService;
     private final WebScraperService webScraperService;
+    private final LlmRouterService llmRouterService;
+
+    // Injecting the Semantic Caching services
+    private final GeminiEmbeddingService embeddingService;
+    private final SemanticCacheRepository cacheRepository;
 
     private static final int SHORT_TERM_WINDOW_TURNS = 3;
     private static final int INSTRUCTION_THRESHOLD_TOKENS = 100;
     private static final int HISTORY_COMPRESSION_THRESHOLD = 200;
-
-    private static final int ROUTER_SIMPLE_INSTRUCTION_LIMIT = 50;
-    private static final int ROUTER_SIMPLE_PROMPT_LIMIT = 400;
-    private static final String FALLBACK_CHEAP_PROVIDER = "FAST_TIER";
 
     public Mono<AiChatResponse> processStatefulChat(
             String instruction,
@@ -42,6 +45,39 @@ public class AdvancedGatewayOrchestrationService {
             String providerName,
             int contextWindow,
             boolean isDevMode
+    ) {
+        // --------------------------------------------------------------------
+        // STEP A: SEMANTIC CACHE LOOKUP (0-TOKEN FAST PATH)
+        // --------------------------------------------------------------------
+        return embeddingService.generateEmbedding(instruction)
+                .flatMap(embedding -> Mono.fromCallable(() -> cacheRepository.findCachedResponse(embedding))
+                        .subscribeOn(Schedulers.boundedElastic())
+                        .flatMap(cachedAnswer -> {
+                            if (cachedAnswer != null) {
+                                log.info("⚡ Returning instant response from Semantic Cache for chatId: {}", chatId);
+                                return handleCacheHit(instruction, cachedAnswer, chatId, isDevMode);
+                            }
+                            // Cache miss: execute full LLM pipeline and store result on completion
+                            return executeFullLlmPipeline(
+                                    instruction, file, url, chatId, providerName, contextWindow, isDevMode, embedding
+                            );
+                        })
+                )
+                // Fallback to standard pipeline if embedding generation fails
+                .switchIfEmpty(executeFullLlmPipeline(
+                        instruction, file, url, chatId, providerName, contextWindow, isDevMode, null
+                ));
+    }
+
+    private Mono<AiChatResponse> executeFullLlmPipeline(
+            String instruction,
+            MultipartFile file,
+            String url,
+            String chatId,
+            String providerName,
+            int contextWindow,
+            boolean isDevMode,
+            List<Double> instructionEmbedding
     ) {
         Mono<ContextResult> contextResultMono = resolveDocumentContext(file, url);
         Mono<ChatSessionState> sessionStateMono = historyRepository.findByChatId(chatId);
@@ -67,15 +103,21 @@ public class AdvancedGatewayOrchestrationService {
                     augmentedInstruction, instructionTokens, INSTRUCTION_THRESHOLD_TOKENS, contextWindow, TargetType.INSTRUCTION
             );
 
+            int estimatedHistoryTokens = tokenCounterService.countTokens(newDistantTurnsBlock)
+                    + tokenCounterService.countTokens(sessionState.getCompressedDistantHistory());
+
+            int dynamicHistoryThreshold = ((instructionTokens + estimatedHistoryTokens) > (contextWindow * 0.8))
+                    ? HISTORY_COMPRESSION_THRESHOLD
+                    : Integer.MAX_VALUE;
+
             Mono<OptimizationResponse> historyTrack = processHistoryCompounding(
-                    newDistantTurnsBlock, sessionState.getCompressedDistantHistory(), contextWindow
+                    newDistantTurnsBlock, sessionState.getCompressedDistantHistory(), contextWindow, dynamicHistoryThreshold
             );
 
             return Mono.zip(instructionTrack, historyTrack).flatMap(optTuple -> {
                 OptimizationResponse optimizedInst = optTuple.getT1();
                 OptimizationResponse optimizedHist = optTuple.getT2();
 
-                // Save the new compressed history back to the session state
                 sessionState.setCompressedDistantHistory(optimizedHist.getTempSummary());
 
                 String compiledPrompt = stitchGatewayPayload(
@@ -84,26 +126,35 @@ public class AdvancedGatewayOrchestrationService {
                         rawShortTermHistory
                 );
 
-                int finalPromptTokens = tokenCounterService.countTokens(compiledPrompt);
-
+                int heuristicPromptTokens = tokenCounterService.countTokens(compiledPrompt);
                 String naivePayload = stitchNaivePayload(instruction, historicalChain);
-                int hypotheticalRawTokens = tokenCounterService.countTokens(naivePayload);
 
-                int turnTokensSaved = Math.max(0, hypotheticalRawTokens - finalPromptTokens);
+                ProviderRoutingContext routingContext = ProviderRoutingContext.builder()
+                        .requestedProvider(instruction)
+                        .instructionTokens(instructionTokens)
+                        .finalPromptTokens(heuristicPromptTokens)
+                        .hasHeavyContext(contextResult.text() != null && !contextResult.text().isBlank())
+                        .build();
 
-                String smartProviderName = determineOptimalProvider(
-                        providerName,
-                        instructionTokens,
-                        finalPromptTokens,
-                        contextResult
-                );
+                String smartProviderName = llmRouterService.route(routingContext);
+
+                int actualFinalTokens = tokenCounterService.countTokens(compiledPrompt, smartProviderName);
+                int actualHypotheticalTokens = tokenCounterService.countTokens(naivePayload, smartProviderName);
+                int turnTokensSaved = Math.max(0, actualHypotheticalTokens - actualFinalTokens);
 
                 LlmProvider targetLlm = providerRegistry.getProvider(smartProviderName);
 
                 return targetLlm.askAi(compiledPrompt).flatMap(aiAnswer -> {
 
+                    // Save to Redis Cache in background if embedding is available
+                    if (instructionEmbedding != null && !instructionEmbedding.isEmpty()) {
+                        Mono.fromRunnable(() -> cacheRepository.cacheResponse(instruction, aiAnswer, instructionEmbedding))
+                                .subscribeOn(Schedulers.boundedElastic())
+                                .subscribe();
+                    }
+
                     String contentToSave = (contextResult.text() != null && !contextResult.text().isBlank())
-                            ? optimizedInst.getTempSummary()
+                            ? instruction + "\n\n[System Note: User provided a document. Extracted Context: " + optimizedInst.getTempSummary() + "]"
                             : instruction;
 
                     GatewayMessage userTurn = GatewayMessage.builder()
@@ -127,8 +178,8 @@ public class AdvancedGatewayOrchestrationService {
 
                         OptimizationResponse mergedMetrics = mergeMetrics(
                                 optimizedInst, optimizedHist, contextWindow,
-                                compiledPrompt, finalPromptTokens,
-                                hypotheticalRawTokens, turnTokensSaved,
+                                compiledPrompt, actualFinalTokens,
+                                actualHypotheticalTokens, turnTokensSaved,
                                 smartProviderName,
                                 providerName
                         );
@@ -146,15 +197,52 @@ public class AdvancedGatewayOrchestrationService {
         });
     }
 
-    private String determineOptimalProvider(String requestedProvider, int instructionTokens, int finalPromptTokens, ContextResult contextResult) {
-        boolean hasHeavyContext = contextResult.text() != null && !contextResult.text().isBlank();
+    private Mono<AiChatResponse> handleCacheHit(String instruction, String cachedAnswer, String chatId, boolean isDevMode) {
+        return historyRepository.findByChatId(chatId).flatMap(sessionState -> {
+            GatewayMessage userTurn = GatewayMessage.builder()
+                    .role(GatewayMessage.Role.USER)
+                    .content(instruction)
+                    .tokenCount(tokenCounterService.countTokens(instruction))
+                    .timestamp(Instant.now())
+                    .build();
 
-        if (!hasHeavyContext && instructionTokens < 25 && finalPromptTokens < ROUTER_SIMPLE_PROMPT_LIMIT) {
-            log.info("Cascading Router Triggered: Trivial request detected. Downgrading to {}.", FALLBACK_CHEAP_PROVIDER);
-            return FALLBACK_CHEAP_PROVIDER;
-        }
+            GatewayMessage assistantTurn = GatewayMessage.builder()
+                    .role(GatewayMessage.Role.ASSISTANT)
+                    .content(cachedAnswer)
+                    .tokenCount(tokenCounterService.countTokens(cachedAnswer))
+                    .timestamp(Instant.now())
+                    .build();
 
-        return requestedProvider;
+            sessionState.addMessage(userTurn);
+            sessionState.addMessage(assistantTurn);
+
+            return historyRepository.save(sessionState).map(savedState ->
+
+                    AiChatResponse.builder()
+                            .userReadableMessage(cachedAnswer)
+                            .sourceType("SEMANTIC_CACHE_HIT")
+                            .wasOptimized(true)
+                            .optimizationMetrics(isDevMode ? createCacheHitMetrics() : null)
+                            .chatId(chatId)
+                            .build()
+            );
+        });
+    }
+
+    private OptimizationResponse createCacheHitMetrics() {
+        return OptimizationResponse.builder()
+                .routingDecision(OptimizationResponse.RoutingDecision.builder()
+                        .requestedProvider("NONE")
+                        .executedProvider("REDIS_SEMANTIC_CACHE")
+                        .actionTaken("ZERO_TOKEN_CACHE_HIT")
+                        .build())
+                .billingImpact(OptimizationResponse.BillingImpact.builder()
+                        .baselineTokens(0)
+                        .billedTokens(0)
+                        .tokensSaved(0)
+                        .savingsPercentage(100.00)
+                        .build())
+                .build();
     }
 
     private Mono<OptimizationResponse> processOptimization(String text, int tokens, int threshold, int contextWindow, TargetType type) {
@@ -171,8 +259,7 @@ public class AdvancedGatewayOrchestrationService {
         return tokenOptimizationService.optimizeDocument(request);
     }
 
-    private Mono<OptimizationResponse> processHistoryCompounding(String newDistantText, String existingSummary, int contextWindow) {
-        // Defensive check: Added null safety for existingSummary
+    private Mono<OptimizationResponse> processHistoryCompounding(String newDistantText, String existingSummary, int contextWindow, int dynamicThreshold) {
         String safeExisting = (existingSummary == null) ? "" : existingSummary;
 
         if (newDistantText == null || newDistantText.isBlank()) {
@@ -184,11 +271,11 @@ public class AdvancedGatewayOrchestrationService {
 
         int totalHistoryTokens = tokenCounterService.countTokens(compoundingHistoryPayload);
 
-        if (totalHistoryTokens < HISTORY_COMPRESSION_THRESHOLD) {
+        if (totalHistoryTokens < dynamicThreshold) {
             return Mono.just(createBypassMetrics(compoundingHistoryPayload, totalHistoryTokens));
         }
 
-        return processOptimization(compoundingHistoryPayload, totalHistoryTokens, HISTORY_COMPRESSION_THRESHOLD, contextWindow, TargetType.DOCUMENT);
+        return processOptimization(compoundingHistoryPayload, totalHistoryTokens, dynamicThreshold, contextWindow, TargetType.HISTORY);
     }
 
     private String stitchGatewayPayload(String instruction, String compressedHistory, List<GatewayMessage> rawShortTerm) {

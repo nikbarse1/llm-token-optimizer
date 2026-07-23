@@ -79,6 +79,13 @@ public class LLMSummarizationService {
         if (targetType == OptimizationRequest.TargetType.INSTRUCTION) {
             return "Refine and condense the following instruction. Preserve all requirements and constraints. Be concise.\n\n"
                     + getBaseRules() + "\n\nInput:\n" + text;
+        } else if (targetType == OptimizationRequest.TargetType.HISTORY) {
+            return """
+                   Extract and append immutable facts, key technical decisions, variables, and architectural constraints from this conversation transcript. 
+                   Do NOT write prose or paragraphs. Output STRICTLY as a highly condensed, bulleted key-value ledger.
+                   
+                   """
+                    + getBaseRules() + "\n\nTranscript to Process:\n" + text;
         } else {
             return "Compress the following document. Retain all factual data and parameters. Output strictly as bulleted notes.\n\n"
                     + getBaseRules() + "\n\nDocument:\n" + text;
@@ -92,21 +99,46 @@ public class LLMSummarizationService {
 
     private List<String> splitIntoChunks(String text, int chunkSize) {
         List<String> chunks = new ArrayList<>();
+
+        // Semantic Split: Try to break safely at double newlines, code blocks, or JSON object starts
+        String[] logicalParagraphs = text.split("(?=\\n\\n|```|\\{)");
+
+        StringBuilder currentChunk = new StringBuilder();
+
+        for (String paragraph : logicalParagraphs) {
+            if (currentChunk.length() + paragraph.length() > chunkSize) {
+                // Save the current chunk before it gets too big
+                if (!currentChunk.isEmpty()) {
+                    chunks.add(currentChunk.toString().trim());
+                    currentChunk = new StringBuilder();
+                }
+
+                // Fallback: If a single massive block (like a minified JS file)
+                // is still larger than the chunk size, we must hard-split it.
+                if (paragraph.length() > chunkSize) {
+                    chunks.addAll(fallbackHardSplit(paragraph, chunkSize));
+                    continue;
+                }
+            }
+            currentChunk.append(paragraph);
+        }
+
+        // Add the remaining text
+        if (!currentChunk.isEmpty()) {
+            chunks.add(currentChunk.toString().trim());
+        }
+
+        return chunks;
+    }
+
+    private List<String> fallbackHardSplit(String text, int chunkSize) {
+        List<String> chunks = new ArrayList<>();
         int length = text.length();
         int start = 0;
 
         while (start < length) {
             int end = Math.min(start + chunkSize, length);
-            if (end < length) {
-                int breakPoint = text.lastIndexOf("\n\n", end);
-                if (breakPoint > start + (chunkSize / 2)) {
-                    end = breakPoint;
-                }
-            }
-            String chunk = text.substring(start, end).trim();
-            if (!chunk.isEmpty()) {
-                chunks.add(chunk);
-            }
+            chunks.add(text.substring(start, end).trim());
             start = end;
         }
         return chunks;
