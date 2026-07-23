@@ -1,17 +1,16 @@
 package com.example.demo;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
-import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 
 @Service
 @Slf4j
@@ -19,25 +18,13 @@ public class LLMSummarizationService {
 
     private static final int CHUNK_CHAR_SIZE = 12_000;
     private static final int CHUNK_CONCURRENCY = 1;
-    private static final int SUMMARY_MAX_TOKENS = 1024;
 
-    private final WebClient webClient;
-    private final String activeModel;
+    private final ChatClient chatClient;
 
     public LLMSummarizationService(
-            @Value("${llm.fast_tier.base_url}") String baseUrl,
-            @Value("${llm.fast_tier.api.key:}") String apiKey,
-            @Value("${llm.fast_tier.model}") String activeModel
-    ) {
-        this.activeModel = activeModel;
-
-        this.webClient = WebClient.builder()
-                .baseUrl(baseUrl)
-                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
-                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
-                .build();
-
-        log.info("Fast-Tier Engine configured using base URL: {}", baseUrl);
+            @Qualifier("openAiChatModel") ChatModel fastTierChatModel) {
+        this.chatClient = ChatClient.create(fastTierChatModel);
+        log.info("LLMSummarizationService configured using Spring AI Fast-Tier Engine.");
     }
 
     public Mono<String> smartCompress(String text, OptimizationRequest.TargetType targetType) {
@@ -48,7 +35,7 @@ public class LLMSummarizationService {
         List<String> chunks = splitIntoChunks(text, CHUNK_CHAR_SIZE);
 
         if (chunks.size() == 1) {
-            return callFastTier(buildSmartPrompt(chunks.get(0), targetType), SUMMARY_MAX_TOKENS, chunks.get(0));
+            return callFastTier(buildSmartUserPrompt(chunks.get(0), targetType), chunks.get(0));
         }
 
         log.info("Input is large ({} chars) - splitting into {} chunks. Processing sequentially.", text.length(), chunks.size());
@@ -56,13 +43,12 @@ public class LLMSummarizationService {
         return Flux.fromIterable(chunks)
                 .index()
                 .flatMapSequential(indexed -> callFastTier(
-                        buildMapPrompt(indexed.getT2(), targetType, indexed.getT1().intValue() + 1, chunks.size()),
-                        SUMMARY_MAX_TOKENS,
+                        buildMapUserPrompt(indexed.getT2(), indexed.getT1().intValue() + 1, chunks.size()),
                         indexed.getT2()), CHUNK_CONCURRENCY)
                 .collectList()
                 .flatMap(extractedNotes -> {
                     String combinedNotes = String.join("\n\n", extractedNotes);
-                    return callFastTier(buildSmartPrompt(combinedNotes, targetType), SUMMARY_MAX_TOKENS, combinedNotes);
+                    return callFastTier(buildSmartUserPrompt(combinedNotes, targetType), combinedNotes);
                 });
     }
 
@@ -75,102 +61,73 @@ public class LLMSummarizationService {
                """;
     }
 
-    private String buildSmartPrompt(String text, OptimizationRequest.TargetType targetType) {
+    private String buildSmartUserPrompt(String text, OptimizationRequest.TargetType targetType) {
         if (targetType == OptimizationRequest.TargetType.INSTRUCTION) {
-            return "Refine and condense the following instruction. Preserve all requirements and constraints. Be concise.\n\n"
-                    + getBaseRules() + "\n\nInput:\n" + text;
+            return "Refine and condense the following instruction. Preserve all requirements and constraints. Be concise.\n\nInput:\n" + text;
+        } else if (targetType == OptimizationRequest.TargetType.HISTORY) {
+            return """
+                   Extract and append immutable facts, key technical decisions, variables, and architectural constraints from this conversation transcript. 
+                   Do NOT write prose or paragraphs. Output STRICTLY as a highly condensed, bulleted key-value ledger.
+                   
+                   Transcript to Process:
+                   """ + text;
         } else {
-            return "Compress the following document. Retain all factual data and parameters. Output strictly as bulleted notes.\n\n"
-                    + getBaseRules() + "\n\nDocument:\n" + text;
+            return "Compress the following document. Retain all factual data and parameters. Output strictly as bulleted notes.\n\nDocument:\n" + text;
         }
     }
 
-    private String buildMapPrompt(String chunk, OptimizationRequest.TargetType targetType, int partIndex, int totalParts) {
+    private String buildMapUserPrompt(String chunk, int partIndex, int totalParts) {
         return "You are helping compress a large input (Part " + partIndex + " of " + totalParts + ").\n\n"
-                + getBaseRules() + "\n\nExtract every important fact, decision, instruction, and ALL code verbatim as concise notes. Output ONLY the extracted notes:\n\n" + chunk;
+                + "Extract every important fact, decision, instruction, and ALL code verbatim as concise notes. Output ONLY the extracted notes:\n\n" + chunk;
     }
 
     private List<String> splitIntoChunks(String text, int chunkSize) {
         List<String> chunks = new ArrayList<>();
-        int length = text.length();
-        int start = 0;
+        String[] logicalParagraphs = text.split("(?=\\n\\n|```|\\{)");
+        StringBuilder currentChunk = new StringBuilder();
 
-        while (start < length) {
-            int end = Math.min(start + chunkSize, length);
-            if (end < length) {
-                int breakPoint = text.lastIndexOf("\n\n", end);
-                if (breakPoint > start + (chunkSize / 2)) {
-                    end = breakPoint;
+        for (String paragraph : logicalParagraphs) {
+            if (currentChunk.length() + paragraph.length() > chunkSize) {
+                if (!currentChunk.isEmpty()) {
+                    chunks.add(currentChunk.toString().trim());
+                    currentChunk = new StringBuilder();
+                }
+                if (paragraph.length() > chunkSize) {
+                    chunks.addAll(fallbackHardSplit(paragraph, chunkSize));
+                    continue;
                 }
             }
-            String chunk = text.substring(start, end).trim();
-            if (!chunk.isEmpty()) {
-                chunks.add(chunk);
-            }
+            currentChunk.append(paragraph);
+        }
+
+        if (!currentChunk.isEmpty()) {
+            chunks.add(currentChunk.toString().trim());
+        }
+        return chunks;
+    }
+
+    private List<String> fallbackHardSplit(String text, int chunkSize) {
+        List<String> chunks = new ArrayList<>();
+        int length = text.length();
+        int start = 0;
+        while (start < length) {
+            int end = Math.min(start + chunkSize, length);
+            chunks.add(text.substring(start, end).trim());
             start = end;
         }
         return chunks;
     }
 
-    private Mono<String> callFastTier(String prompt, int maxTokens, String fallbackSource) {
-        Map<String, Object> requestBody = Map.of(
-                "model", activeModel,
-                "messages", List.of(Map.of("role", "user", "content", prompt)),
-                "temperature", 0.1,
-                "max_tokens", maxTokens
-        );
-
-        return webClient.post()
-                .bodyValue(requestBody)
-                .exchangeToMono(response -> {
-                    if (response.statusCode().is2xxSuccessful()) {
-                        return response.bodyToMono(String.class)
-                                .flatMap(responseBody -> {
-                                    try {
-                                        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-                                        mapper.configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-
-                                        FastTierResponse fastTierResponse = mapper.readValue(responseBody, FastTierResponse.class);
-                                        if (fastTierResponse != null && fastTierResponse.getChoices() != null && !fastTierResponse.getChoices().isEmpty()) {
-                                            return Mono.just(fastTierResponse.getChoices().get(0).getMessage().getContent());
-                                        }
-                                        return Mono.just(fallbackSource);
-                                    } catch (Exception e) {
-                                        log.error("Error parsing Fast-Tier response: {}", responseBody);
-                                        return Mono.just(fallbackSource);
-                                    }
-                                });
-                    } else {
-                        return response.bodyToMono(String.class)
-                                .flatMap(errorBody -> {
-                                    log.error("Fast-Tier API error status: {}, body: {}", response.statusCode(), errorBody);
-                                    return Mono.just(fallbackSource);
-                                })
-                                .switchIfEmpty(Mono.fromRunnable(() -> log.error("Fast-Tier API error status: {}, no error body", response.statusCode()))
-                                        .then(Mono.just(fallbackSource)));
-                    }
-                })
+    private Mono<String> callFastTier(String userPrompt, String fallbackSource) {
+        return Mono.fromCallable(() -> chatClient.prompt()
+                        .system(getBaseRules()) // Injected natively as a system message
+                        .user(userPrompt)
+                        .call()
+                        .content())
+                .subscribeOn(Schedulers.boundedElastic())
                 .onErrorResume(e -> {
                     log.error("Error calling Fast-Tier API: {}, using fallback", e.getMessage());
                     return Mono.just(fallbackSource);
                 });
-    }
-
-    @Data
-    private static class FastTierResponse {
-        @JsonProperty("choices")
-        private List<FastTierChoice> choices;
-    }
-
-    @Data
-    private static class FastTierChoice {
-        @JsonProperty("message")
-        private FastTierMessage message;
-    }
-
-    @Data
-    private static class FastTierMessage {
-        @JsonProperty("content")
-        private String content;
     }
 }

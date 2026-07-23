@@ -2,15 +2,24 @@ package com.example.demo.advancePlusOne;
 
 import com.example.demo.*;
 import com.example.demo.OptimizationRequest.TargetType;
+import com.example.demo.embeddings.GeminiEmbeddingService;
+import com.example.demo.embeddings.SemanticCacheRepository;
 import com.example.demo.llmrouter.AiChatResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
-import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -19,242 +28,227 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class AdvancedGatewayOrchestrationService {
 
-    private final ReactiveChatHistoryRepository historyRepository;
     private final LlmProviderRegistry providerRegistry;
     private final TokenOptimizationService tokenOptimizationService;
     private final TokenCounterService tokenCounterService;
     private final FileParserService fileParserService;
     private final WebScraperService webScraperService;
+    private final LlmRouterService llmRouterService;
 
-    private static final int SHORT_TERM_WINDOW_TURNS = 3;
+    // Spring AI Native Components
+    private final ChatMemory chatMemory;
+
+    // Semantic Caching services
+    private final GeminiEmbeddingService embeddingService;
+    private final SemanticCacheRepository cacheRepository;
+
+    private static final int SHORT_TERM_WINDOW_TURNS = 3; // 3 Pairs (6 messages)
     private static final int INSTRUCTION_THRESHOLD_TOKENS = 100;
     private static final int HISTORY_COMPRESSION_THRESHOLD = 200;
 
-    private static final int ROUTER_SIMPLE_INSTRUCTION_LIMIT = 50;
-    private static final int ROUTER_SIMPLE_PROMPT_LIMIT = 400;
-    private static final String FALLBACK_CHEAP_PROVIDER = "FAST_TIER";
-
     public Mono<AiChatResponse> processStatefulChat(
-            String instruction,
-            MultipartFile file,
-            String url,
-            String chatId,
-            String providerName,
-            int contextWindow,
-            boolean isDevMode
-    ) {
+            String instruction, MultipartFile file, String url, String chatId,
+            String providerName, int contextWindow, boolean isDevMode) {
+
+        return embeddingService.generateEmbedding(instruction)
+                .flatMap(embedding -> Mono.fromCallable(() -> cacheRepository.findCachedResponse(embedding))
+                        .subscribeOn(Schedulers.boundedElastic())
+                        .flatMap(cachedAnswer -> {
+                            if (cachedAnswer != null) {
+                                log.info("⚡ Returning instant response from Semantic Cache for chatId: {}", chatId);
+                                return handleCacheHit(instruction, cachedAnswer, chatId, isDevMode);
+                            }
+                            return executeFullLlmPipeline(
+                                    instruction, file, url, chatId, providerName, contextWindow, isDevMode, embedding
+                            );
+                        })
+                )
+                .switchIfEmpty(executeFullLlmPipeline(
+                        instruction, file, url, chatId, providerName, contextWindow, isDevMode, null
+                ));
+    }
+
+    private Mono<AiChatResponse> executeFullLlmPipeline(
+            String instruction, MultipartFile file, String url, String chatId,
+            String providerName, int contextWindow, boolean isDevMode, List<Double> instructionEmbedding) {
+
         Mono<ContextResult> contextResultMono = resolveDocumentContext(file, url);
-        Mono<ChatSessionState> sessionStateMono = historyRepository.findByChatId(chatId);
 
-        return Mono.zip(contextResultMono, sessionStateMono).flatMap(tuple -> {
-            ContextResult contextResult = tuple.getT1();
-            ChatSessionState sessionState = tuple.getT2();
+        // Retrieve memory natively via Spring AI
+        List<Message> sessionHistory = chatMemory.get(chatId);
 
+        return contextResultMono.flatMap(contextResult -> {
             String augmentedInstruction = buildCombinedPrompt(instruction, contextResult.text());
             int instructionTokens = tokenCounterService.countTokens(augmentedInstruction);
 
-            List<GatewayMessage> historicalChain = sessionState.getMessages();
-            int splitIndex = Math.max(0, historicalChain.size() - SHORT_TERM_WINDOW_TURNS);
+            // Separate out the compressed distant history system message if it exists
+            String existingCompressedHistory = "";
+            List<Message> rawHistoryTurns = new ArrayList<>();
+            for (Message msg : sessionHistory) {
+                if (msg instanceof SystemMessage sys && sys.getText().startsWith("PREVIOUS RECAP:")) {
+                    existingCompressedHistory = sys.getText().replace("PREVIOUS RECAP:\n", "");
+                } else {
+                    rawHistoryTurns.add(msg);
+                }
+            }
 
-            List<GatewayMessage> distantHistory = historicalChain.subList(0, splitIndex);
-            List<GatewayMessage> rawShortTermHistory = historicalChain.subList(splitIndex, historicalChain.size());
+            int splitIndex = Math.max(0, rawHistoryTurns.size() - (SHORT_TERM_WINDOW_TURNS * 2));
+            List<Message> distantHistory = rawHistoryTurns.subList(0, splitIndex);
+            List<Message> rawShortTermHistory = rawHistoryTurns.subList(splitIndex, rawHistoryTurns.size());
 
             String newDistantTurnsBlock = distantHistory.stream()
-                    .map(msg -> String.format("%s: %s", msg.getRole(), msg.getContent()))
+                    .map(msg -> msg.getMessageType().getValue().toUpperCase() + ": " + msg.getText())
                     .collect(Collectors.joining("\n"));
 
             Mono<OptimizationResponse> instructionTrack = processOptimization(
                     augmentedInstruction, instructionTokens, INSTRUCTION_THRESHOLD_TOKENS, contextWindow, TargetType.INSTRUCTION
             );
 
+            int estimatedHistoryTokens = tokenCounterService.countTokens(newDistantTurnsBlock)
+                    + tokenCounterService.countTokens(existingCompressedHistory);
+            int dynamicHistoryThreshold = ((instructionTokens + estimatedHistoryTokens) > (contextWindow * 0.8))
+                    ? HISTORY_COMPRESSION_THRESHOLD : Integer.MAX_VALUE;
+
             Mono<OptimizationResponse> historyTrack = processHistoryCompounding(
-                    newDistantTurnsBlock, sessionState.getCompressedDistantHistory(), contextWindow
+                    newDistantTurnsBlock, existingCompressedHistory, contextWindow, dynamicHistoryThreshold
             );
 
             return Mono.zip(instructionTrack, historyTrack).flatMap(optTuple -> {
                 OptimizationResponse optimizedInst = optTuple.getT1();
                 OptimizationResponse optimizedHist = optTuple.getT2();
 
-                // Save the new compressed history back to the session state
-                sessionState.setCompressedDistantHistory(optimizedHist.getTempSummary());
+                // Create the Structured Prompt using Spring AI Standards
+                List<Message> messagesToSend = new ArrayList<>();
 
-                String compiledPrompt = stitchGatewayPayload(
-                        optimizedInst.getTempSummary(),
-                        optimizedHist.getTempSummary(),
-                        rawShortTermHistory
-                );
+                String systemRules = "Process the request inside the current active chat stream context.";
+                if (optimizedHist.getTempSummary() != null && !optimizedHist.getTempSummary().isBlank()) {
+                    systemRules += "\n\nPREVIOUS RECAP:\n" + optimizedHist.getTempSummary();
+                }
+                messagesToSend.add(new SystemMessage(systemRules));
+                messagesToSend.addAll(rawShortTermHistory);
+                messagesToSend.add(new UserMessage(optimizedInst.getTempSummary()));
 
-                int finalPromptTokens = tokenCounterService.countTokens(compiledPrompt);
+                Prompt compiledPrompt = new Prompt(messagesToSend);
 
-                String naivePayload = stitchNaivePayload(instruction, historicalChain);
-                int hypotheticalRawTokens = tokenCounterService.countTokens(naivePayload);
+                // Pre-count logic for routing
+                int heuristicPromptTokens = tokenCounterService.countTokens(compiledPrompt.getInstructions().toString());
+                int naiveHypotheticalTokens = tokenCounterService.countTokens(instruction + "\n" + rawHistoryTurns.toString());
 
-                int turnTokensSaved = Math.max(0, hypotheticalRawTokens - finalPromptTokens);
+                ProviderRoutingContext routingContext = ProviderRoutingContext.builder()
+                        .requestedProvider(providerName)
+                        .instructionTokens(instructionTokens)
+                        .finalPromptTokens(heuristicPromptTokens)
+                        .hasHeavyContext(!contextResult.text().isBlank())
+                        .build();
 
-                String smartProviderName = determineOptimalProvider(
-                        providerName,
-                        instructionTokens,
-                        finalPromptTokens,
-                        contextResult
-                );
-
+                String smartProviderName = llmRouterService.route(routingContext);
                 LlmProvider targetLlm = providerRegistry.getProvider(smartProviderName);
 
-                return targetLlm.askAi(compiledPrompt).flatMap(aiAnswer -> {
+                return targetLlm.askAi(compiledPrompt).flatMap(chatResponse -> {
+                    String aiAnswerText = chatResponse.getResult().getOutput().getText();
+                    org.springframework.ai.chat.metadata.Usage actualUsage = chatResponse.getMetadata().getUsage();
 
-                    String contentToSave = (contextResult.text() != null && !contextResult.text().isBlank())
-                            ? optimizedInst.getTempSummary()
-                            : instruction;
+                    if (instructionEmbedding != null && !instructionEmbedding.isEmpty()) {
+                        Mono.fromRunnable(() -> cacheRepository.cacheResponse(instruction, aiAnswerText, instructionEmbedding))
+                                .subscribeOn(Schedulers.boundedElastic()).subscribe();
+                    }
 
-                    GatewayMessage userTurn = GatewayMessage.builder()
-                            .role(GatewayMessage.Role.USER)
-                            .content(contentToSave)
-                            .tokenCount(tokenCounterService.countTokens(contentToSave))
-                            .timestamp(Instant.now())
-                            .build();
+                    // Update Spring AI ChatMemory securely
+                    List<Message> newMemoryState = new ArrayList<>();
+                    newMemoryState.add(new SystemMessage("PREVIOUS RECAP:\n" + optimizedHist.getTempSummary()));
+                    newMemoryState.addAll(rawShortTermHistory);
+                    newMemoryState.add(new UserMessage(optimizedInst.getTempSummary()));
+                    newMemoryState.add(new AssistantMessage(aiAnswerText));
 
-                    GatewayMessage assistantTurn = GatewayMessage.builder()
-                            .role(GatewayMessage.Role.ASSISTANT)
-                            .content(aiAnswer)
-                            .tokenCount(tokenCounterService.countTokens(aiAnswer))
-                            .timestamp(Instant.now())
-                            .build();
+                    chatMemory.clear(chatId);
+                    chatMemory.add(chatId, newMemoryState);
 
-                    sessionState.addMessage(userTurn);
-                    sessionState.addMessage(assistantTurn);
+                    OptimizationResponse mergedMetrics = mergeMetrics(
+                            optimizedInst, optimizedHist, contextWindow,
+                            compiledPrompt.getInstructions().toString(), actualUsage,
+                            naiveHypotheticalTokens, smartProviderName, providerName
+                    );
 
-                    return historyRepository.save(sessionState).map(savedState -> {
-
-                        OptimizationResponse mergedMetrics = mergeMetrics(
-                                optimizedInst, optimizedHist, contextWindow,
-                                compiledPrompt, finalPromptTokens,
-                                hypotheticalRawTokens, turnTokensSaved,
-                                smartProviderName,
-                                providerName
-                        );
-
-                        return AiChatResponse.builder()
-                                .userReadableMessage(aiAnswer)
-                                .sourceType(contextResult.sourceType())
-                                .wasOptimized(true)
-                                .optimizationMetrics((isDevMode) ? mergedMetrics : null)
-                                .chatId(chatId)
-                                .build();
-                    });
+                    return Mono.just(AiChatResponse.builder()
+                            .userReadableMessage(aiAnswerText)
+                            .sourceType(contextResult.sourceType())
+                            .wasOptimized(true)
+                            .optimizationMetrics(isDevMode ? mergedMetrics : null)
+                            .chatId(chatId)
+                            .build());
                 });
             });
         });
     }
 
-    private String determineOptimalProvider(String requestedProvider, int instructionTokens, int finalPromptTokens, ContextResult contextResult) {
-        boolean hasHeavyContext = contextResult.text() != null && !contextResult.text().isBlank();
+    private Mono<AiChatResponse> handleCacheHit(String instruction, String cachedAnswer, String chatId, boolean isDevMode) {
+        List<Message> newMessages = List.of(new UserMessage(instruction), new AssistantMessage(cachedAnswer));
+        chatMemory.add(chatId, newMessages);
 
-        if (!hasHeavyContext && instructionTokens < 25 && finalPromptTokens < ROUTER_SIMPLE_PROMPT_LIMIT) {
-            log.info("Cascading Router Triggered: Trivial request detected. Downgrading to {}.", FALLBACK_CHEAP_PROVIDER);
-            return FALLBACK_CHEAP_PROVIDER;
-        }
-
-        return requestedProvider;
-    }
-
-    private Mono<OptimizationResponse> processOptimization(String text, int tokens, int threshold, int contextWindow, TargetType type) {
-        if (text == null || text.isBlank()) {
-            return Mono.just(createBypassMetrics("", 0));
-        }
-        if (tokens < threshold) {
-            return Mono.just(createBypassMetrics(text, tokens));
-        }
-        OptimizationRequest request = new OptimizationRequest();
-        request.setDocument(text);
-        request.setContextWindow(contextWindow);
-        request.setTargetType(type);
-        return tokenOptimizationService.optimizeDocument(request);
-    }
-
-    private Mono<OptimizationResponse> processHistoryCompounding(String newDistantText, String existingSummary, int contextWindow) {
-        // Defensive check: Added null safety for existingSummary
-        String safeExisting = (existingSummary == null) ? "" : existingSummary;
-
-        if (newDistantText == null || newDistantText.isBlank()) {
-            return Mono.just(createBypassMetrics(safeExisting, tokenCounterService.countTokens(safeExisting)));
-        }
-
-        String compoundingHistoryPayload = safeExisting.isBlank() ? newDistantText
-                : String.format("PREVIOUS RECAP:\n%s\n\nNEW CONVERSATION TRANSCRIPT:\n%s", safeExisting, newDistantText);
-
-        int totalHistoryTokens = tokenCounterService.countTokens(compoundingHistoryPayload);
-
-        if (totalHistoryTokens < HISTORY_COMPRESSION_THRESHOLD) {
-            return Mono.just(createBypassMetrics(compoundingHistoryPayload, totalHistoryTokens));
-        }
-
-        return processOptimization(compoundingHistoryPayload, totalHistoryTokens, HISTORY_COMPRESSION_THRESHOLD, contextWindow, TargetType.DOCUMENT);
-    }
-
-    private String stitchGatewayPayload(String instruction, String compressedHistory, List<GatewayMessage> rawShortTerm) {
-        StringBuilder payload = new StringBuilder();
-        payload.append("CORE SYSTEM INSTRUCTION:\n")
-                .append("Process the request inside the current active chat stream context.\n\n");
-
-        if (compressedHistory != null && !compressedHistory.isBlank()) {
-            payload.append("=== COMPRESSED HISTORICAL CONVERSATION MILESTONES ===\n")
-                    .append(compressedHistory).append("\n\n");
-        }
-
-        if (!rawShortTerm.isEmpty()) {
-            payload.append("=== IMMEDIATE VERBATIM CONVERSATION CONTEXT ===\n");
-            for (GatewayMessage msg : rawShortTerm) {
-                payload.append(msg.getRole()).append(": ").append(msg.getContent()).append("\n");
-            }
-            payload.append("\n");
-        }
-
-        payload.append("=== TARGET USER INSTRUCTION TO EXECUTE ===\n").append(instruction);
-        return payload.toString();
+        return Mono.just(AiChatResponse.builder()
+                .userReadableMessage(cachedAnswer)
+                .sourceType("SEMANTIC_CACHE_HIT")
+                .wasOptimized(true)
+                .chatId(chatId)
+                .build());
     }
 
     private OptimizationResponse mergeMetrics(
             OptimizationResponse inst, OptimizationResponse doc, int contextWindow,
-            String finalPromptContent, int finalPromptTokens, int hypotheticalRawTokens,
-            int turnTokensSaved, String actualProvider, String requestedProvider) {
+            String finalPromptContent, org.springframework.ai.chat.metadata.Usage actualUsage,
+            int hypotheticalRawTokens, String actualProvider, String requestedProvider) {
 
-        int fastTierInput = (inst.getTempFastTierInputTokens() != null ? inst.getTempFastTierInputTokens() : 0)
-                + (doc.getTempFastTierInputTokens() != null ? doc.getTempFastTierInputTokens() : 0);
+        long promptTokens = actualUsage != null ? actualUsage.getPromptTokens() : 0L;
+        long completionTokens = actualUsage != null ? actualUsage.getCompletionTokens() : 0L;
+        long totalTokens = actualUsage != null ? actualUsage.getTotalTokens() : 0L;
 
-        int fastTierOutput = (inst.getTempFastTierOutputTokens() != null ? inst.getTempFastTierOutputTokens() : 0)
-                + (doc.getTempFastTierOutputTokens() != null ? doc.getTempFastTierOutputTokens() : 0);
-
-        double fastTierReduction = fastTierInput > 0 ? ((double) (fastTierInput - fastTierOutput) / fastTierInput) * 100 : 0.0;
-        double totalSavingsPercent = hypotheticalRawTokens > 0 ? ((double) turnTokensSaved / hypotheticalRawTokens) * 100 : 0.0;
-
-        String actionTaken = requestedProvider.equalsIgnoreCase(actualProvider)
-                ? "EXECUTED_AS_REQUESTED"
-                : "DOWNGRADED_TO_CHEAPER_MODEL";
+        long tokensSaved = Math.max(0, hypotheticalRawTokens - totalTokens);
+        double savingsPercent = hypotheticalRawTokens > 0 ? ((double) tokensSaved / hypotheticalRawTokens) * 100 : 0.0;
 
         return OptimizationResponse.builder()
                 .routingDecision(OptimizationResponse.RoutingDecision.builder()
                         .requestedProvider(requestedProvider)
                         .executedProvider(actualProvider)
-                        .actionTaken(actionTaken)
                         .build())
-                .billingImpact(OptimizationResponse.BillingImpact.builder()
-                        .baselineTokens(hypotheticalRawTokens)
-                        .billedTokens(finalPromptTokens)
-                        .tokensSaved(turnTokensSaved)
-                        .savingsPercentage(Double.parseDouble(String.format("%.2f", totalSavingsPercent)))
-                        .build())
-                .compressionInternals(OptimizationResponse.CompressionInternals.builder()
-                        .tokensProcessed(fastTierInput)
-                        .tokensOutput(fastTierOutput)
-                        .compressionReduction(Double.parseDouble(String.format("%.2f", fastTierReduction)))
-                        .compressionSummary(buildFinalPromptSummary(inst.getTempSummary(), doc.getTempSummary()))
+                .usageMetrics(OptimizationResponse.UsageMetrics.builder() // The new DTO structure
+                        .expectedTokensBeforeOptimization(hypotheticalRawTokens)
+                        .actualPromptTokens(promptTokens)
+                        .actualCompletionTokens(completionTokens)
+                        .actualTotalTokens(totalTokens)
+                        .tokensSaved(tokensSaved)
+                        .savingsPercentage(Double.parseDouble(String.format("%.2f", savingsPercent)))
                         .build())
                 .payloadSnapshot(OptimizationResponse.PayloadSnapshot.builder()
                         .contextWindowSize(contextWindow)
-                        .remainingHeadroom(Math.max(0, contextWindow - finalPromptTokens))
+                        .remainingHeadroom(Math.max(0, contextWindow - (int)totalTokens))
                         .finalPrompt(finalPromptContent)
                         .build())
                 .build();
+    }
+
+    private Mono<OptimizationResponse> processOptimization(String text, int tokens, int threshold, int contextWindow, TargetType type) {
+        if (text == null || text.isBlank()) return Mono.just(createBypassMetrics("", 0));
+        if (tokens < threshold) return Mono.just(createBypassMetrics(text, tokens));
+
+        OptimizationRequest request = new OptimizationRequest();
+        request.setDocument(text);
+        request.setTargetType(type);
+        return tokenOptimizationService.optimizeDocument(request);
+    }
+
+    private Mono<OptimizationResponse> processHistoryCompounding(String newDistantText, String existingSummary, int contextWindow, int dynamicThreshold) {
+        String safeExisting = (existingSummary == null) ? "" : existingSummary;
+        if (newDistantText == null || newDistantText.isBlank()) {
+            return Mono.just(createBypassMetrics(safeExisting, tokenCounterService.countTokens(safeExisting)));
+        }
+
+        String compoundingPayload = safeExisting.isBlank() ? newDistantText
+                : String.format("PREVIOUS RECAP:\n%s\n\nNEW CONVERSATION TRANSCRIPT:\n%s", safeExisting, newDistantText);
+
+        int tokens = tokenCounterService.countTokens(compoundingPayload);
+        if (tokens < dynamicThreshold) return Mono.just(createBypassMetrics(compoundingPayload, tokens));
+
+        return processOptimization(compoundingPayload, tokens, dynamicThreshold, contextWindow, TargetType.HISTORY);
     }
 
     private OptimizationResponse createBypassMetrics(String text, int tokens) {
@@ -280,33 +274,8 @@ public class AdvancedGatewayOrchestrationService {
     }
 
     private String buildCombinedPrompt(String instruction, String documentContext) {
-        if (documentContext == null || documentContext.isBlank()) {
-            return instruction;
-        }
+        if (documentContext == null || documentContext.isBlank()) return instruction;
         return String.format("%s\n\n--- Document Context ---\n%s", instruction, documentContext);
-    }
-
-    private String buildFinalPromptSummary(String optimizedInstruction, String optimizedHistory) {
-        String safeInst = optimizedInstruction == null ? "" : optimizedInstruction;
-        String safeHist = optimizedHistory == null ? "" : optimizedHistory;
-        return String.format("Instruction Snapshot:\n%s\n\nHistory Snapshot:\n%s", safeInst, safeHist);
-    }
-
-    private String stitchNaivePayload(String instruction, List<GatewayMessage> allHistory) {
-        StringBuilder payload = new StringBuilder();
-        payload.append("CORE SYSTEM INSTRUCTION:\n")
-                .append("Process the request inside the current active chat stream context.\n\n");
-
-        if (!allHistory.isEmpty()) {
-            payload.append("=== IMMEDIATE VERBATIM CONVERSATION CONTEXT ===\n");
-            for (GatewayMessage msg : allHistory) {
-                payload.append(msg.getRole()).append(": ").append(msg.getContent()).append("\n");
-            }
-            payload.append("\n");
-        }
-
-        payload.append("=== TARGET USER INSTRUCTION TO EXECUTE ===\n").append(instruction);
-        return payload.toString();
     }
 
     private record ContextResult(String text, String sourceType) {}

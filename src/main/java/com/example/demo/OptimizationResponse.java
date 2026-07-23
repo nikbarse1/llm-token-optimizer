@@ -19,7 +19,7 @@ public class OptimizationResponse {
     private LocalDateTime timestamp = LocalDateTime.now();
 
     private RoutingDecision routingDecision;
-    private BillingImpact billingImpact;
+    private UsageMetrics usageMetrics;
     private CompressionInternals compressionInternals;
     private PayloadSnapshot payloadSnapshot;
 
@@ -35,14 +35,17 @@ public class OptimizationResponse {
         private String actionTaken;
     }
 
+    // Replace the old BillingImpact class with this upgraded one
     @Data
     @Builder
     @NoArgsConstructor
     @AllArgsConstructor
-    public static class BillingImpact {
-        private Integer baselineTokens; // What would have been charged
-        private Integer billedTokens;   // What was actually charged
-        private Integer tokensSaved;
+    public static class UsageMetrics {
+        private Integer expectedTokensBeforeOptimization; // What jtokkit estimated
+        private Long actualPromptTokens;                  // True metric from API
+        private Long actualCompletionTokens;              // True metric from API
+        private Long actualTotalTokens;                   // True metric from API
+        private Long tokensSaved;
         private Double savingsPercentage;
     }
 

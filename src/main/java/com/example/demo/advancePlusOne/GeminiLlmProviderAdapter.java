@@ -1,30 +1,36 @@
 package com.example.demo.advancePlusOne;
 
-import com.example.demo.llmrouter.PrimaryLlmService;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+import lombok.extern.slf4j.Slf4j;
 
 @Service
 @Slf4j
-@RequiredArgsConstructor
 public class GeminiLlmProviderAdapter implements LlmProvider {
 
-    // Inject your existing functional Gemini service bean
-    private final PrimaryLlmService primaryLlmService;
+    private final ChatClient chatClient;
+
+    public GeminiLlmProviderAdapter(
+            @Qualifier("googleGenAiChatModel") ChatModel chatModel) {
+
+        this.chatClient = ChatClient.create(chatModel);
+    }
 
     @Override
-    public Mono<String> askAi(String compiledPrompt) {
-        log.info("Gateway routing execution to existing PrimaryLlmService...");
-
-        // Directly invoke your existing working WebClient/Gemini execution block
-        return primaryLlmService.askAi(compiledPrompt);
+    public Mono<ChatResponse> askAi(Prompt prompt) {
+        log.info("Gateway routing execution to Spring AI Gemini...");
+        return Mono.fromCallable(() -> chatClient.prompt(prompt).call().chatResponse())
+                .subscribeOn(Schedulers.boundedElastic());
     }
 
     @Override
     public String getProviderName() {
-        // This key maps exactly to what the registry registers and what the controller expects
         return "GEMINI";
     }
 }

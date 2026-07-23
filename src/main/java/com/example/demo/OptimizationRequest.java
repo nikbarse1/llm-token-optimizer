@@ -21,6 +21,7 @@ public class OptimizationRequest {
 
     public enum TargetType {
         INSTRUCTION,
-        DOCUMENT
+        DOCUMENT,
+        HISTORY
     }
 }
