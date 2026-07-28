@@ -8,8 +8,12 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
+import org.springframework.web.context.request.async.AsyncRequestTimeoutException;
+import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.client.RestClientException;
 
 import java.io.IOException;
+import java.net.SocketTimeoutException;
 import java.time.LocalDateTime;
 
 @RestControllerAdvice
@@ -64,6 +68,23 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(error, HttpStatus.PAYLOAD_TOO_LARGE);
     }
 
+    @ExceptionHandler(ResourceAccessException.class)
+    public ResponseEntity<ErrorResponse> handleResourceAccessException(
+            ResourceAccessException ex, WebRequest request) {
+        String rootCause = ex.getCause() != null ? ex.getCause().getClass().getSimpleName() : "Unknown";
+        log.warn("LLM service I/O error ({}): {}", rootCause, ex.getMessage());
+
+        ErrorResponse error = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.SERVICE_UNAVAILABLE.value())
+                .error("Service Unavailable")
+                .message("Could not reach the LLM service. Please try again in a moment.")
+                .path(request.getDescription(false).replace("uri=", ""))
+                .build();
+
+        return new ResponseEntity<>(error, HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
     @ExceptionHandler(IOException.class)
     public ResponseEntity<ErrorResponse> handleIOException(
             IOException ex, WebRequest request) {
@@ -78,6 +99,37 @@ public class GlobalExceptionHandler {
                 .build();
         
         return new ResponseEntity<>(error, HttpStatus.BAD_REQUEST);
+    }
+
+    @ExceptionHandler(RestClientException.class)
+    public ResponseEntity<ErrorResponse> handleRestClientException(
+            RestClientException ex, WebRequest request) {
+        String path = request.getDescription(false).replace("uri=", "");
+        Throwable cause = ex.getCause();
+        String causeName = cause != null ? cause.getClass().getSimpleName() : "Unknown";
+
+        if (cause instanceof SocketTimeoutException) {
+            log.warn("LLM read timeout ({}): {}", causeName, ex.getMessage());
+            ErrorResponse error = ErrorResponse.builder()
+                    .timestamp(LocalDateTime.now())
+                    .status(HttpStatus.GATEWAY_TIMEOUT.value())
+                    .error("Gateway Timeout")
+                    .message("The LLM took too long to respond. It was retried or fallback handled.")
+                    .path(path)
+                    .build();
+            return new ResponseEntity<>(error, HttpStatus.GATEWAY_TIMEOUT);
+        }
+
+        log.error("Rest client error while calling LLM: {}", ex.getMessage(), ex);
+        ErrorResponse error = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.BAD_GATEWAY.value())
+                .error("Bad Gateway")
+                .message("An error occurred while calling the LLM service.")
+                .path(path)
+                .build();
+
+        return new ResponseEntity<>(error, HttpStatus.BAD_GATEWAY);
     }
 
     @ExceptionHandler(NoResourceFoundException.class)
@@ -126,5 +178,23 @@ public class GlobalExceptionHandler {
                 .build();
         
         return new ResponseEntity<>(error, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
+    // Add this method inside the GlobalExceptionHandler class
+    @ExceptionHandler(AsyncRequestTimeoutException.class)
+    public ResponseEntity<ErrorResponse> handleAsyncRequestTimeoutException(
+            AsyncRequestTimeoutException ex, WebRequest request) {
+
+        log.error("Request timed out waiting for the AI provider response.");
+
+        ErrorResponse error = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.GATEWAY_TIMEOUT.value())
+                .error("Gateway Timeout")
+                .message("The AI provider took too long to respond. The model might be experiencing high traffic. Please try again.")
+                .path(request.getDescription(false).replace("uri=", ""))
+                .build();
+
+        return new ResponseEntity<>(error, HttpStatus.GATEWAY_TIMEOUT);
     }
 }

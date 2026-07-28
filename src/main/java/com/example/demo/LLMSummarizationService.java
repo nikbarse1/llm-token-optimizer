@@ -9,21 +9,24 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
-import java.util.ArrayList;
 import java.util.List;
 
 @Service
 @Slf4j
 public class LLMSummarizationService {
 
-    private static final int CHUNK_CHAR_SIZE = 12_000;
+    // Conservative chunk limit (e.g., GPT-4o-mini / Llama 3)
+    private static final int CHUNK_TOKEN_LIMIT = 3000;
     private static final int CHUNK_CONCURRENCY = 1;
 
     private final ChatClient chatClient;
+    private final TokenCounterService tokenCounterService;
 
     public LLMSummarizationService(
-            @Qualifier("openAiChatModel") ChatModel fastTierChatModel) {
+            @Qualifier("openAiChatModel") ChatModel fastTierChatModel,
+            TokenCounterService tokenCounterService) {
         this.chatClient = ChatClient.create(fastTierChatModel);
+        this.tokenCounterService = tokenCounterService;
         log.info("LLMSummarizationService configured using Spring AI Fast-Tier Engine.");
     }
 
@@ -32,13 +35,15 @@ public class LLMSummarizationService {
             return Mono.just("Empty input.");
         }
 
-        List<String> chunks = splitIntoChunks(text, CHUNK_CHAR_SIZE);
+        // Split text strictly by token counts, entirely removing character-limit guesswork
+        List<String> chunks = tokenCounterService.splitTextByTokens(text, CHUNK_TOKEN_LIMIT);
 
         if (chunks.size() == 1) {
             return callFastTier(buildSmartUserPrompt(chunks.get(0), targetType), chunks.get(0));
         }
 
-        log.info("Input is large ({} chars) - splitting into {} chunks. Processing sequentially.", text.length(), chunks.size());
+        log.info("Input is large ({} tokens) - splitting into {} chunks. Processing sequentially.",
+                tokenCounterService.countTokens(text), chunks.size());
 
         return Flux.fromIterable(chunks)
                 .index()
@@ -48,6 +53,13 @@ public class LLMSummarizationService {
                 .collectList()
                 .flatMap(extractedNotes -> {
                     String combinedNotes = String.join("\n\n", extractedNotes);
+
+                    // If the combined notes are STILL too large, we do a recursive compression pass.
+                    // This prevents the final map-reduce step from crashing the context window.
+                    if (tokenCounterService.countTokens(combinedNotes) > CHUNK_TOKEN_LIMIT) {
+                        return smartCompress(combinedNotes, targetType);
+                    }
+
                     return callFastTier(buildSmartUserPrompt(combinedNotes, targetType), combinedNotes);
                 });
     }
@@ -81,46 +93,9 @@ public class LLMSummarizationService {
                 + "Extract every important fact, decision, instruction, and ALL code verbatim as concise notes. Output ONLY the extracted notes:\n\n" + chunk;
     }
 
-    private List<String> splitIntoChunks(String text, int chunkSize) {
-        List<String> chunks = new ArrayList<>();
-        String[] logicalParagraphs = text.split("(?=\\n\\n|```|\\{)");
-        StringBuilder currentChunk = new StringBuilder();
-
-        for (String paragraph : logicalParagraphs) {
-            if (currentChunk.length() + paragraph.length() > chunkSize) {
-                if (!currentChunk.isEmpty()) {
-                    chunks.add(currentChunk.toString().trim());
-                    currentChunk = new StringBuilder();
-                }
-                if (paragraph.length() > chunkSize) {
-                    chunks.addAll(fallbackHardSplit(paragraph, chunkSize));
-                    continue;
-                }
-            }
-            currentChunk.append(paragraph);
-        }
-
-        if (!currentChunk.isEmpty()) {
-            chunks.add(currentChunk.toString().trim());
-        }
-        return chunks;
-    }
-
-    private List<String> fallbackHardSplit(String text, int chunkSize) {
-        List<String> chunks = new ArrayList<>();
-        int length = text.length();
-        int start = 0;
-        while (start < length) {
-            int end = Math.min(start + chunkSize, length);
-            chunks.add(text.substring(start, end).trim());
-            start = end;
-        }
-        return chunks;
-    }
-
     private Mono<String> callFastTier(String userPrompt, String fallbackSource) {
         return Mono.fromCallable(() -> chatClient.prompt()
-                        .system(getBaseRules()) // Injected natively as a system message
+                        .system(getBaseRules())
                         .user(userPrompt)
                         .call()
                         .content())

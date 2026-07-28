@@ -28,6 +28,7 @@ public class GeminiEmbeddingService {
             return Mono.empty();
         }
 
+        log.debug("Generating embedding for text length={}", text.length());
         return Mono.fromCallable(() -> {
                     // Spring AI returns float[] arrays by default for Embeddings.
                     // We map it to List<Double> to maintain compatibility with your existing Redis Semantic Cache logic.

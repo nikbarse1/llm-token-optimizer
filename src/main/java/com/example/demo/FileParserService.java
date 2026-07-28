@@ -23,6 +23,8 @@ public class FileParserService {
             throw new IOException("File name is null");
         }
 
+        log.info("Parsing uploaded file: {}", filename);
+
         // Convert MultipartFile to a Spring Resource for the AI Document Readers
         Resource resource = new ByteArrayResource(file.getBytes()) {
             @Override
@@ -45,9 +47,12 @@ public class FileParserService {
         }
 
         // Combine all parsed pages/sections into a single string for your optimization pipeline
-        return documents.stream()
+        String text = documents.stream()
                 .map(Document::getText)
                 .collect(Collectors.joining("\n"));
+
+        log.info("Extracted {} characters from {} ({} sections)", text.length(), filename, documents.size());
+        return text;
     }
 
     private String getFileExtension(String filename) {

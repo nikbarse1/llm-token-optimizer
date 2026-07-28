@@ -25,8 +25,21 @@ public class GeminiLlmProviderAdapter implements LlmProvider {
     @Override
     public Mono<ChatResponse> askAi(Prompt prompt) {
         log.info("Gateway routing execution to Spring AI Gemini...");
-        return Mono.fromCallable(() -> chatClient.prompt(prompt).call().chatResponse())
-                .subscribeOn(Schedulers.boundedElastic());
+        log.info("Gemini prompt - messages: {}, content preview: '{}'",
+                prompt.getInstructions().size(), truncate(prompt.getInstructions().toString(), 500));
+        return Mono.fromCallable(() -> {
+                    ChatResponse response = chatClient.prompt(prompt).call().chatResponse();
+                    String text = response.getResult().getOutput().getText();
+                    log.info("Gemini response - length: {}", text != null ? text.length() : 0);
+                    return response;
+                })
+                .subscribeOn(Schedulers.boundedElastic())
+                .doOnError(e -> log.warn("Gemini call failed: {}", e.getMessage()));
+    }
+
+    private static String truncate(String text, int max) {
+        if (text == null || text.length() <= max) return text;
+        return text.substring(0, max) + "...";
     }
 
     @Override

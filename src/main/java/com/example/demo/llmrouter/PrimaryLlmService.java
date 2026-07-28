@@ -56,6 +56,7 @@ public class PrimaryLlmService {
                                 .parts()
                                 .getFirst()
                                 .text()
-                );
+                )
+                .doOnError(e -> log.error("Gemini API call failed: {}", e.getMessage()));
     }
 }

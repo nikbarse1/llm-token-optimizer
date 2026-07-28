@@ -24,59 +24,51 @@ import java.util.UUID;
 public class AiChatController2 {
 
     private final AdvancedGatewayOrchestrationService gatewayOrchestrationService;
+    private final ActiveSessionTracker sessionTracker;
+    private final ChatTitleGeneratorService titleGeneratorService;
 
-    @Operation(
-            summary = "Submit a prompt to the optimized AI gateway",
-            description = "Processes a user instruction alongside optional files or URLs, optimizing the context window and intelligently routing the request to the best LLM provider.",
-            responses = {
-                    @ApiResponse(responseCode = "200", description = "Successful AI execution",
-                            content = @Content(schema = @Schema(implementation = AiChatResponse.class))),
-                    @ApiResponse(responseCode = "400", description = "Invalid request parameters"),
-                    @ApiResponse(responseCode = "500", description = "Internal processing or LLM provider error")
-            }
-    )
+    @Operation(summary = "Submit a prompt to the optimized AI gateway")
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
     public Mono<AiChatResponse> chat(
-            @Parameter(description = "The core instruction or question for the AI")
             @RequestParam("instruction") String instruction,
-
-            @Parameter(description = "Optional document to upload and parse as context (PDF, TXT, DOCX)")
             @RequestParam(value = "file", required = false) MultipartFile file,
-
-            @Parameter(description = "Optional URL to scrape and inject as context")
             @RequestParam(value = "url", required = false) String url,
-
-            @Parameter(description = "A unique identifier for maintaining conversational state across multiple turns")
             @RequestParam(value = "chatId", required = false) String chatId,
-
-            @Parameter(description = "Target LLM provider engine (e.g., GEMINI, FAST_TIER)")
             @RequestParam(value = "provider", defaultValue = "GEMINI") String provider,
-
-            @Parameter(description = "The absolute maximum token context window allowed for this execution")
             @RequestParam(value = "contextWindow", defaultValue = "8192") int contextWindow,
-
-            @Parameter(description = "If true, returns detailed token optimization and routing telemetry metrics")
             @RequestHeader(value = "X-Developer-Mode", defaultValue = "false") boolean isDevMode
     ) {
-        // Generate a new unique session identifier if the client did not provide one
-        String activeChatId = (chatId == null || chatId.isBlank()) ? UUID.randomUUID().toString() : chatId;
+        boolean isNewSession = (chatId == null || chatId.isBlank());
+        String activeChatId = isNewSession ? UUID.randomUUID().toString() : chatId;
 
-        log.info("Incoming gateway request - ChatId: {}, Provider: {}, File Present: {}, URL Present: {}, DevMode: {}",
-                activeChatId, provider, (file != null && !file.isEmpty()), (url != null && !url.isBlank()), isDevMode);
+        // If this is a brand new chat, register it and generate a title in the background
+        if (isNewSession && !sessionTracker.sessionExists(activeChatId)) {
+            sessionTracker.registerSession(activeChatId, "New Chat");
+
+            // Fire-and-forget background task for title generation
+            titleGeneratorService.generateTitle(instruction)
+                    .doOnNext(title -> sessionTracker.updateTitle(activeChatId, title))
+                    .subscribe();
+        }
+
+        log.info("Incoming gateway request - ChatId: {}, Provider: {}, File: {}, URL: {}",
+                activeChatId, provider, (file != null && !file.isEmpty()), (url != null && !url.isBlank()));
+        log.info("Request payload - chatId: {}, instructionLength: {}, instructionPreview: '{}'",
+                activeChatId, instruction.length(), truncate(instruction, 200));
 
         return gatewayOrchestrationService.processStatefulChat(
-                instruction,
-                file,
-                url,
-                activeChatId,
-                provider,
-                contextWindow,
-                isDevMode
+                instruction, file, url, activeChatId, provider, contextWindow, isDevMode
         ).map(response -> {
-            // Explicitly inject the active chatId back into the response payload
-            // so the frontend knows what ID to pass back on subsequent turns
             response.setChatId(activeChatId);
+            log.info("Response payload - chatId: {}, sourceType: {}, wasOptimized: {}, responseLength: {}",
+                    activeChatId, response.getSourceType(), response.isWasOptimized(),
+                    response.getUserReadableMessage() != null ? response.getUserReadableMessage().length() : 0);
             return response;
         });
+    }
+
+    private static String truncate(String text, int max) {
+        if (text == null || text.length() <= max) return text;
+        return text.substring(0, max) + "...";
     }
 }
